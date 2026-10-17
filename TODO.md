@@ -21,9 +21,8 @@ Kurzliste; Einzelheiten in den Einträgen weiter unten.
 - **Einstellungen beim Ausschalten:** Client-Einstellungen werden 3 s
   verzögert gespeichert. Ausgeschaltet wird am Poti-Schalter, also Strom
   weg ohne Vorwarnung; was in diesen 3 s geändert wurde, ist verloren.
-- **WLED:** Peek bzw. Effekt-Test mit Musik und Durchsage; mehr als ein
-  WLED; WLED hinter einem Gerät der dritten Ebene (Weiterleitungskette)
-  auf Hardware. An BDFC antwortete das WLED immer wieder 1,5–3 s lang
+- **WLED:** mehr als ein WLED; WLED hinter einem Gerät der dritten Ebene
+  (Weiterleitungskette) auf Hardware. An BDFC antwortete das WLED immer wieder 1,5–3 s lang
   nicht auf Pings (neunmal in sechs Minuten, an B688 vorher nie), die
   LED-Daten setzen dann aus; Signalstärke des WLED mitloggen. Siehe
   „WLED-Anbindung“.
@@ -166,6 +165,8 @@ Bugs sind umgesetzt:
     nie auf Pings antwortet, bekommt sie wie vorher. Gleicher Test
     danach (23:04, WLED an B688): nach 1,5 s angehalten, 921 Pakete
     zurückgehalten, 0 Sendefehler, kein Abriss, kein Unterlauf.
+  - Effekte mit einer echten LED-Kette geprüft (2026-10-17): sie folgen
+    der Musik und den Durchsagen.
 
 - **Durchsage: Abspielen nach Sequenznummer (2026-10-10).** Gemessen pro
   Durchsage: kaum verlorene Pakete, aber rund zehn Abstände von 40–150 ms
