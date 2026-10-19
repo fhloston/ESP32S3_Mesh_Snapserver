@@ -13,7 +13,8 @@ Kurzliste; Einzelheiten in den Einträgen weiter unten.
   bekommt die Musik, mit Link auf der Server-Seite; Durchsagen verdecken
   Funkaussetzer statt still zu werden.
 - **Features:** OTA über die Web-Seite; USB-Audio am Client als Mikrofon;
-  Erkennung, ob das Handy bei Durchsagen direkt am Root hängt.
+  Erkennung, ob das Handy bei Durchsagen direkt am Root hängt; Spotify
+  direkt auf den Server, siehe „Spotify direkt auf den Server“.
 - **USB-Soundkarte (`feat/usb-uac`):** Flashen unter Windows nach
   „Neustart zum Flashen“ ungetestet; Dauerlauf unter Windows (FIFO,
   Ausgleichs-Frames); TinyUSB belegt 10,5 KB internes
@@ -128,6 +129,45 @@ Bugs sind umgesetzt:
   damit mehrere Clients über Stunden synchron bleiben — siehe Plan-Datei.
 
 ## Nicht als Bug, aber vorgemerkt
+
+- **Spotify direkt auf den Server (2026-10-19, nur besprochen, nichts
+  gebaut).** Ziel: Musik ohne Zusatzmodul auf den Server, gern per
+  Spotify. Bluetooth fällt aus: Der ESP32-S3 kann nur Bluetooth LE, kein
+  Classic, also kein A2DP; auch kein LE Audio. Das TinySine-Modul ist
+  der Umweg über I2S und zählt nicht als direkt.
+  - **Spotify Connect mit cspot** (C++, ESP-IDF, nur Premium):
+    Die Spotify-App ist dann nur Fernbedienung, der Server holt die
+    Musik selbst. Er braucht also eigenes Internet; das Internet des
+    Handys hilft ihm nicht, außer das Handy macht einen Hotspot und der
+    Server meldet sich dort als Station an.
+  - **Internet am Server:** Es gibt keinen Router-Code. Der Root leert
+    seine Station-Einstellungen (`provisioning_clear_sta_wifi()`) und
+    startet Mesh-Lite mit `join_mesh_ignore_router_status = true`.
+    Einschalten ist klein: Router-SSID/-Passwort in Einstellungen und
+    Seite, `esp_mesh_lite_set_router_config()`, nicht mehr leeren.
+    Offen, nur auf Hardware zu klären: Das Mesh folgt dem Kanal des
+    Hotspots (muss 2,4 GHz sein); ist der Hotspot weg, sucht der Root
+    ihn und verlässt dafür seinen Kanal (Verdacht auf Aussetzer, siehe
+    „Fusion-Intervall“); gibt der Hotspot 192.168.5.x aus, will die
+    Bridge das Netz des Servers verlegen, das auf 192.168.5.1 festsitzt.
+  - **Ton:** Spotify liefert 44,1 kHz, der Stream läuft mit 48 kHz
+    (Resampler gibt es, `audio_resample.c`); Umschalten gegenüber I2S
+    und USB; Lautstärke aus der App.
+  - **Platz:** TLS, Vorbis-Dekoder und Opus auf einem Chip. Am
+    2026-10-17 hatte der Server ~80 KB internes RAM frei, Leerlauf
+    59 % auf Kern 1 und 72 % auf Kern 0. Ob es reicht, ist nicht
+    gemessen.
+  - **Lizenz:** cspot steht unter der GPLv3 (`LICENSE.md`). Mit cspot
+    fällt die verteilte Firmware als Ganzes unter die GPLv3; der eigene
+    Code bleibt MIT.
+  - **Alternative ohne Internet am Server:** SnapAnnounce schneidet den
+    Ton der Spotify-App mit (Android ab 10) und schickt ihn an den
+    Server. Apps können das verbieten; ob Spotify es tut, ist nicht
+    geprüft. Test: Bildschirmaufnahme mit Ton „Medien“, während
+    Spotify spielt.
+  - **Vorgehen, falls es angegangen wird:** erst die Hotspot-Anbindung
+    am Server bauen und testen (Musik ruhig? Hotspot aus und wieder an?),
+    dann cspot einbauen und Flash, RAM und Rechenzeit messen.
 
 - **WLED-Anbindung (2026-10-10, `feat/wled-sync`).** Jedes Gerät fragt die
   Stationen in seinem eigenen WLAN nach `/json/info`; antwortet ein WLED,
