@@ -41,6 +41,14 @@ Kurzliste; Einzelheiten in den Einträgen weiter unten.
   Musikverbindung und baute sie neu auf (1,5 s stumm). Ursache offen. Die
   Abrisse um 22:40 und 22:56 kamen von einem verschwundenen WLED (siehe
   „WLED-Anbindung“); ob das auch um 22:02 so war, ist nicht belegt.
+- **Fehlstarts in Folge zählen auch am Server (gemeldet 2026-11-05):** Das
+  soll nicht sein, nur Clients sollen zählen. Im Code wartet der Server
+  nach dem Start 60 s auf eine Station an seinem AP
+  (`mesh_root.c`, `provisioning_arm_grace_window(WIFI_EVENT,
+  WIFI_EVENT_AP_STACONNECTED)`); kommt keine, zählt er hoch. Ab 7
+  (`PROVISIONING_BOOT_FAIL_THRESHOLD`) startet er statt des Mesh den
+  Provisioning-AP, ein Server ohne Clients also beim achten Start.
+  Fix später.
 - **Mesh/Robustheit:** Relay mit mehreren Kindern; hängender Zweig am
   Server; Einbruch beim Abgang eines Clients; `SNAPSERVER_MAX_CLIENTS = 10`
   ungetestet; Fusion-Intervall und Reconnect-Intervall beobachten;
