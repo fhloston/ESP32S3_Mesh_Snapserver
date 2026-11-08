@@ -5,22 +5,32 @@ Hintergründe, Messungen und Erledigtes. Was noch zu tun ist, steht in
 
 ## Neu 2026-11-08
 
-- **Fehlstart-Zähler entfernt.** Jedes Gerät wartete nach dem Start 60 s
-  auf eine Station: der Server auf einen Client an seinem AP, ein Client
-  auf seinen eigenen Beitritt. Kam keine, zählte es hoch; ab 7 startete es
-  statt des Mesh den offenen Einrichtungs-AP. Ein Server ohne Clients fiel
-  so beim achten Start in den Einrichtungsmodus. Jetzt startet jedes Gerät
-  immer ins Mesh, außer nach dem ersten Flashen, nach Werkseinstellungen
-  oder bei ausgeschaltetem Mesh. Ein Client, der nicht ins Mesh kommt (z. B.
-  falsches Passwort), bleibt dabei und sucht weiter; zurück geht es nur über
-  Flashen mit „Erase device“. Das Feld im gespeicherten Einstellungsblock
-  bleibt als `unused_boot_fail_count` stehen, damit der Block sein Format
-  behält und die Einstellungen beim Update erhalten bleiben.
+- **Fehlstart-Zähler nur noch am Client.** Bisher wartete jedes Gerät nach
+  dem Start 60 s auf eine Station: der Server auf einen Client an seinem
+  AP, ein Client auf seinen eigenen Beitritt (IP vom Parent). Kam keine,
+  zählte es hoch; ab 7 startete es statt des Mesh den offenen
+  Einrichtungs-AP. Ein Server ohne Clients fiel so beim achten Start in den
+  Einrichtungsmodus. Jetzt zählt nur der Client; der Server übergeht auch
+  einen Zählerstand aus einer früheren Client-Rolle. Ein Client, der nicht
+  ins Mesh kommt (z. B. falsches Passwort), öffnet nach sieben Starts ohne
+  Mesh beim achten wieder `ESP32_provisioning_…`. Die Statusseite zeigt
+  die Fehlstarts nur am Client. Den Zähler ganz zu entfernen (Commit
+  4e2bfce) habe ich zurückgenommen: Dann wäre ein solcher Client nur noch
+  per Flashen mit „Erase device“ erreichbar.
+- **Root-Wächter wartet auf die Zählung.** Der Wächter startet einen
+  Client frühestens 60 s nach dem Start neu, das Fenster des
+  Fehlstart-Zählers endet erst 60 s nach dem Mesh-Start, also etwas
+  später. Meldet ein Client ohne Parent Level 1 (nicht bekannt, siehe
+  „Root-Failover-Risiko“), wäre er immer vor der Zählung neu gestartet
+  und nie in den Einrichtungsmodus gekommen. Jetzt hält der Wächter den
+  Neustart, bis der Start gezählt ist
+  (`provisioning_grace_window_pending()`).
 - **Strobo für die WLEDs.** Auf der Server-Seite unter „WLED“, solange ein
-  WLED gefunden ist. Gedrückt halten: Die Seite schickt
-  `POST /api/wled-strobe {"ms":1200}` alle 400 ms, beim Loslassen
-  `{"ms":0}`; geht die Seite weg, endet der Strobo nach 1,2 s von selbst.
-  Der Server gibt es an jeden eigenen Client weiter
+  WLED gefunden ist. Antippen: Die Seite schickt `POST /api/wled-strobe`,
+  alle WLEDs blitzen 2,5 s lang (`WLED_STROBE_MS` in `wled_sync.h`), ein
+  weiterer Tipp startet die Zeit neu. Die erste Fassung (gedrückt halten)
+  hatte ich falsch verstanden; gewollt ist ein fester Zeitraum wie beim
+  Preset „Strobo 2 s“ im WLED-Projekt. Der Server gibt es an jeden eigenen Client weiter
   (`snapserver_notify_own_clients()`, Nachrichtentyp 100 ohne Antwort).
   Jedes Gerät blitzt seine eigenen WLEDs über WLEDs UDP-Echtzeitprotokoll
   DNRGB an (Port aus `/json/info`, sonst 21324): 10 Blitze pro Sekunde,
@@ -96,8 +106,8 @@ Bugs sind umgesetzt:
   Ablehnung <8 Zeichen per curl, 32-Zeichen-SSID im WLAN-Scan, volles
   3-Minuten-Timeout-ohne-Reboot-Fenster, Stresstest paralleler Saves
   während des Grace-Windows — siehe Plan-Datei für den vollständigen
-  Verifikationsplan. Grace-Window und Fehlstart-Zähler gibt es seit
-  2026-11-08 nicht mehr (siehe oben).
+  Verifikationsplan. Seit 2026-11-08 zählt nur noch der Client Fehlstarts
+  (siehe oben).
 
 - Stufe 6 (Feature auf `test/ServerClient`, Plan aus Analyse der Client-Rolle
   und des Referenzprojekts `ESP32_Mesh_Snapclient`, Stufe 1 von 2): der

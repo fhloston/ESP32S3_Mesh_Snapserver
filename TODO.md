@@ -29,8 +29,8 @@ stehen in [docs/notizen.md](docs/notizen.md).
 
 ## Auf Hardware prüfen
 
-- **Strobo:** WLED blitzt, solange der Knopf gedrückt ist, und spielt nach
-  dem Loslassen sofort seinen Effekt weiter. WLEDs an mehreren Geräten.
+- **Strobo:** Ein Tipp, WLED blitzt 2,5 s und spielt danach sofort seinen
+  Effekt weiter. WLEDs an mehreren Geräten.
 - **Durchsage:** neuen Empfang (Sequenznummer) auf 14E4 und 7788 flashen
   und dort messen.
 - **WLED:** mehr als ein WLED; ein WLED hinter einem Gerät der dritten Ebene.
@@ -49,6 +49,9 @@ stehen in [docs/notizen.md](docs/notizen.md).
   eingeschalteten mobilen Daten.
 - **Einrichtung:** Passwort unter 8 Zeichen wird abgelehnt; SSID mit 32
   Zeichen; der Einrichtungs-AP schaltet nach 3 Minuten ab.
+- **Fehlstarts:** Client mit falschem Passwort öffnet beim achten Start den
+  Einrichtungs-AP, auch wenn der Root-Wächter ihn neu startet; Server ohne
+  Clients bleibt nach acht Starts im Mesh.
 - **Board mit 4 oder 8 MB Flash.**
 
 ## Messen
@@ -74,8 +77,8 @@ Release-Notizen schreiben (`docs/releases/<tag>.md`). Seit v0.5.3:
 - Client startet neu, statt Root zu werden (Wächter).
 - Ein/Aus-Taster schaltet erst nach 1 s Halten ein.
 - Gerätename überall mit zwei MAC-Bytes.
-- Kein Fehlstart-Zähler mehr: Ein Gerät fällt nicht mehr von selbst in den
-  Einrichtungsmodus.
+- Der Server zählt keine Fehlstarts mehr und fällt ohne Clients nicht mehr
+  in den Einrichtungsmodus. Clients zählen weiter.
 - Slave-Takt 80 MHz und Glitch-Filter aus v0.5.2 sind wieder ausgebaut.
 
 ## Ideen
