@@ -59,8 +59,7 @@
   #server_nav { font-size: 0.9rem; margin-top: -0.4rem; }
   #server_nav a { font-weight: bold; }
   #server_nav .off { color: #b03030; }
-  #wled_strobe { margin-top: 0.6rem; user-select: none; -webkit-user-select: none;
-    -webkit-touch-callout: none; touch-action: none; }
+  #wled_strobe { margin-top: 0.6rem; }
   #wled_strobe.on { background: #fff; box-shadow: 0 0 0 3px #f6ad55; }
   footer { margin-top: 2rem; padding-top: 0.6rem; border-top: 1px solid #ccc; font-size: 0.75rem; color: #888; text-align: center; }
 </style>
@@ -79,7 +78,7 @@
 <h2>WLED</h2>
 <div id="wled_list"></div>
 <button type="button" id="wled_strobe">Strobe</button>
-<div class="note">Hold: every WLED flashes white.</div>
+<div class="note">Tap: every WLED flashes white for 2.5 s.</div>
 </div>
 
 <h2 id="settings_title" hidden></h2>
@@ -343,7 +342,7 @@ const DE = {
   'no address in the mesh yet': 'noch ohne Adresse im Mesh',
   'at {0}': 'an {0}',
   'Strobe': 'Strobo',
-  'Hold: every WLED flashes white.': 'Gedrückt halten: alle WLEDs blitzen weiß.',
+  'Tap: every WLED flashes white for 2.5 s.': 'Antippen: alle WLEDs blitzen 2,5 s lang weiß.',
 };
 
 function t(text, ...args) {
@@ -1186,78 +1185,29 @@ async function loadWleds() {
     list.append(row);
   }
   $('wled_section').hidden = found.length === 0;
-  if (found.length === 0) strobeStop();
 }
 
-// Strobe while the button is held. The request asks for 1.2 s and is
-// renewed every 400 ms, so a page that goes away (tab closed, phone locked)
-// stops it within that time. One request at a time: the device's web server
-// handles one after the other, and a queue of renewals would hold up the
-// request that stops it.
-let strobeHeld = false;
-let strobeBusy = false;
+// One tap strobes every WLED for WLED_STROBE_MS (wled_sync.h). A tap
+// during the strobe starts the time over. The button stays lit as long.
 let strobeTimer = null;
 
-async function strobeSync() {
-  if (strobeBusy) return;
-  strobeBusy = true;
+async function strobeTap() {
+  let ms = 2500;
   try {
-    let sent;
-    do {
-      sent = strobeHeld;
-      try {
-        await fetch('/api/wled-strobe', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ms: sent ? 1200 : 0 }),
-        });
-      } catch (e) {
-        // The next renewal tries again; without one the strobe runs out.
-      }
-    } while (sent !== strobeHeld);
-  } finally {
-    strobeBusy = false;
+    const r = await fetch('/api/wled-strobe', { method: 'POST' });
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d.ms) ms = d.ms;
+  } catch (e) {
+    return;
   }
-}
-
-function strobeStart(e) {
-  if (e) e.preventDefault();
-  if (strobeHeld) return;
-  strobeHeld = true;
-  $('wled_strobe').classList.add('on');
-  strobeSync();
-  strobeTimer = setInterval(strobeSync, 400);
-}
-
-function strobeStop() {
-  if (!strobeHeld) return;
-  strobeHeld = false;
-  clearInterval(strobeTimer);
-  strobeTimer = null;
-  $('wled_strobe').classList.remove('on');
-  strobeSync();
-}
-
-{
   const b = $('wled_strobe');
-  b.addEventListener('pointerdown', (e) => {
-    if (e.button !== 0) return;
-    // Keeps the release here even when the finger slides off the button.
-    if (b.setPointerCapture) b.setPointerCapture(e.pointerId);
-    strobeStart(e);
-  });
-  for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture', 'blur']) {
-    b.addEventListener(ev, strobeStop);
-  }
-  b.addEventListener('contextmenu', (e) => e.preventDefault());
-  b.addEventListener('keydown', (e) => {
-    if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) strobeStart(e);
-  });
-  b.addEventListener('keyup', (e) => {
-    if (e.key === ' ' || e.key === 'Enter') strobeStop();
-  });
-  document.addEventListener('visibilitychange', () => { if (document.hidden) strobeStop(); });
+  b.classList.add('on');
+  clearTimeout(strobeTimer);
+  strobeTimer = setTimeout(() => b.classList.remove('on'), ms);
 }
+
+$('wled_strobe').addEventListener('click', strobeTap);
 
 async function loadDevices() {
   if (devicesBusy) return;

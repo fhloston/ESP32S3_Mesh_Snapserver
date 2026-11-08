@@ -65,12 +65,16 @@ size_t wled_sync_list(wled_sync_info_t *out, size_t max);
  */
 esp_err_t wled_sync_relay_forward(uint32_t child_ip, uint16_t port, char *url, size_t url_len);
 
+/* How long one tap on the Strobe button strobes. The page's note says
+ * the same ("2.5 s", webconfig_page.html). */
+#define WLED_STROBE_MS 2500U
+
 /*
  * Strobe on every WLED on this device's access point for the next `ms`
- * (at most 3000); 0 stops it at once. The page renews it while the button
- * is held, so a page that goes away stops the strobe within that time. On
- * the server the request also goes to every client (webconfig.c). WLED
- * needs "Receive UDP realtime" on (Sync Interfaces, on by default).
+ * (at most 3000); 0 stops it at once. A new call during a strobe starts
+ * the time over. The server's page asks for WLED_STROBE_MS and passes it
+ * on to every client (webconfig.c). WLED needs "Receive UDP realtime" on
+ * (Sync Interfaces, on by default).
  */
 void wled_sync_strobe(uint32_t ms);
 

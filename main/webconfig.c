@@ -847,40 +847,25 @@ static esp_err_t api_wled_forward_post_handler(httpd_req_t *req)
 }
 
 /*
- * Strobe on the WLEDs, body {"ms": n}: for the next n ms (at most 3000),
- * 0 = stop. The page renews it every 400 ms while the button is held. The
- * server passes it on to every client, which strobes its own WLEDs.
+ * One tap on the Strobe button, no body: strobe on the WLEDs for
+ * WLED_STROBE_MS. The server passes it on to every client, which strobes
+ * its own WLEDs for the same time.
  */
 static esp_err_t api_wled_strobe_post_handler(httpd_req_t *req)
 {
-    char body[64];
-    if (read_body(req, body, sizeof(body)) != ESP_OK) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad request body");
-        return ESP_OK;
-    }
-    cJSON *request = cJSON_Parse(body);
-    const cJSON *ms = cJSON_GetObjectItemCaseSensitive(request, "ms");
-    const bool valid = cJSON_IsNumber(ms) && ms->valuedouble >= 0.0;
-    const uint32_t duration_ms =
-        valid ? (uint32_t)((ms->valuedouble > 3000.0) ? 3000.0 : ms->valuedouble) : 0U;
-    cJSON_Delete(request);
-    if (!valid) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "ms missing");
-        return ESP_OK;
-    }
-
-    wled_sync_strobe(duration_ms);
+    wled_sync_strobe(WLED_STROBE_MS);
     size_t clients = 0U;
     device_config_t cfg;
     device_config_get(&cfg);
     if (cfg.role == DEVICE_ROLE_SERVER) {
         char json[48];
-        snprintf(json, sizeof(json), "{\"op\":\"strobe\",\"ms\":%u}", (unsigned)duration_ms);
+        snprintf(json, sizeof(json), "{\"op\":\"strobe\",\"ms\":%u}", (unsigned)WLED_STROBE_MS);
         clients = snapserver_notify_own_clients(json);
     }
 
     cJSON *resp = cJSON_CreateObject();
     cJSON_AddNumberToObject(resp, "clients", (double)clients);
+    cJSON_AddNumberToObject(resp, "ms", WLED_STROBE_MS);
     return send_json(req, resp);
 }
 
