@@ -347,7 +347,7 @@ static esp_err_t start_client_mesh(const device_config_t *cfg)
 
     ESP_LOGI(TAG, "Mesh client started: relay SSID=%s (shared with root)", cfg->mesh_ssid);
 
-    return provisioning_arm_grace_window(IP_EVENT, IP_EVENT_STA_GOT_IP);
+    return ESP_OK;
 }
 #endif
 

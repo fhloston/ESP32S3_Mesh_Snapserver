@@ -84,7 +84,7 @@ static esp_err_t start_mesh(const device_config_t *cfg)
              cfg->mesh_ssid, cfg->mesh_channel, cfg->mesh_max_level);
     ESP_LOGI(TAG, "Autonomous root started: SoftAP + DHCP + Mesh-Lite level 1");
 
-    return provisioning_arm_grace_window(WIFI_EVENT, WIFI_EVENT_AP_STACONNECTED);
+    return ESP_OK;
 }
 #endif
 

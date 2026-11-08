@@ -623,13 +623,6 @@ static esp_err_t api_volume_post_handler(httpd_req_t *req)
 
 static esp_err_t api_factory_reset_post_handler(httpd_req_t *req)
 {
-    /*
-     * If a grace-window task is mid-wait, it would otherwise write
-     * device_config back to NVS a few seconds/minutes after this erase,
-     * silently undoing the reset. See device_config_factory_reset()'s own
-     * s_erased latch for the belt-and-suspenders half of this fix.
-     */
-    provisioning_cancel_grace_window();
     device_config_factory_reset();
     /* Volumes, delays and names given to clients go with it. */
     client_store_erase_all();
@@ -684,7 +677,6 @@ static cJSON *build_status_json(void)
     static const char *const reason_names[] = {
         [PROVISIONING_REASON_NONE] = "none",
         [PROVISIONING_REASON_NO_CONFIG] = "no_config",
-        [PROVISIONING_REASON_BOOT_FAIL_STREAK] = "boot_fail_streak",
         [PROVISIONING_REASON_MESH_DISABLED] = "mesh_disabled",
     };
 
@@ -697,7 +689,6 @@ static cJSON *build_status_json(void)
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "reason", reason_names[reason]);
-    cJSON_AddNumberToObject(root, "boot_fail_count", cfg.boot_fail_count);
     cJSON_AddNumberToObject(root, "uptime_s", esp_timer_get_time() / 1000000);
     cJSON_AddStringToObject(root, "device_id", device_id);
     /* The release tag in a CI build, `git describe` otherwise. */

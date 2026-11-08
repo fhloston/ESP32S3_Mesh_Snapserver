@@ -25,24 +25,21 @@ static const char *TAG = "DEVICE_CONFIG";
 #define DEVICE_SVOL_NVS_KEY         "svol"
 
 /*
- * s_cfg is written from whichever task calls device_config_save()/
- * _set_boot_fail_count() (the HTTP task, or the provisioning grace-window
- * task) and read from device_config_get() by any of those plus app_main's
- * startup task. s_cfg_lock guards only the struct copy in and out; the NVS
- * I/O in write_blob() always happens outside the critical section.
+ * s_cfg is written from whichever task calls device_config_save() (the HTTP
+ * task, or the client's task for a request relayed by the server) and read
+ * from device_config_get() by any task. s_cfg_lock guards only the struct
+ * copy in and out; the NVS I/O in write_blob() always happens outside the
+ * critical section.
  */
 static device_config_t s_cfg;
 static portMUX_TYPE s_cfg_lock = portMUX_INITIALIZER_UNLOCKED;
 static bool s_first_boot;
 /*
  * Latched by device_config_factory_reset(). Once set, device_config_save()
- * and device_config_set_boot_fail_count() become no-ops: a factory reset is
- * always immediately followed by a reboot (see webconfig.c), but anything
- * that was already mid-flight before the erase -- most notably the
- * provisioning grace-window task writing back a boot-fail count -- would
- * otherwise silently resurrect the erased config in the few seconds before
- * that reboot happens. provisioning_cancel_grace_window() covers the one
- * known such writer; this catches any other one too.
+ * becomes a no-op: a factory reset is always immediately followed by a
+ * reboot (see webconfig.c), but a save that was already mid-flight before
+ * the erase would otherwise silently resurrect the erased config in the
+ * few seconds before that reboot happens.
  */
 static bool s_erased;
 
@@ -216,7 +213,7 @@ static void seed_defaults(device_config_t *cfg)
     cfg->opus_bitrate = CONFIG_SNAPSERVER_OPUS_BITRATE;
     cfg->opus_complexity = CONFIG_SNAPSERVER_OPUS_COMPLEXITY;
 
-    cfg->boot_fail_count = 0;
+    cfg->unused_boot_fail_count = 0;
 
     cfg->role = DEVICE_ROLE_SERVER;
     cfg->buffer_ms = 3000;
@@ -474,38 +471,7 @@ esp_err_t device_config_save(const device_config_t *cfg)
 
     device_config_t to_store = *cfg;
     to_store.version = DEVICE_CONFIG_VERSION;
-
-    /*
-     * An explicit save is a fresh, deliberate reconfiguration attempt, so
-     * give the mesh boot streak a clean slate. Without this, a device stuck
-     * in the provisioning-AP boot-fail-streak loop could never earn its way
-     * back to a normal mesh boot: the streak only resets on a successful
-     * mesh boot, and a streak boot never attempts one (see provisioning.c).
-     */
-    to_store.boot_fail_count = 0;
-
-    const esp_err_t result = write_blob(&to_store);
-    if (result != ESP_OK) {
-        return result;
-    }
-
-    portENTER_CRITICAL(&s_cfg_lock);
-    s_cfg = to_store;
-    portEXIT_CRITICAL(&s_cfg_lock);
-    return ESP_OK;
-}
-
-esp_err_t device_config_set_boot_fail_count(uint8_t count)
-{
-    if (s_erased) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    device_config_t to_store;
-    portENTER_CRITICAL(&s_cfg_lock);
-    to_store = s_cfg;
-    portEXIT_CRITICAL(&s_cfg_lock);
-    to_store.boot_fail_count = count;
+    to_store.unused_boot_fail_count = 0;
 
     const esp_err_t result = write_blob(&to_store);
     if (result != ESP_OK) {

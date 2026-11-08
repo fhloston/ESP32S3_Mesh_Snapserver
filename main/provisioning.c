@@ -1,6 +1,6 @@
 /**
  * @file provisioning.c
- * @brief Mesh vs. provisioning-AP decision, boot-fail streak, AP timers.
+ * @brief Mesh vs. provisioning-AP decision, AP timeout.
  */
 #include "provisioning.h"
 
@@ -9,7 +9,6 @@
 
 #include "dhcpserver/dhcpserver.h"
 #include "esp_bridge.h"
-#include "esp_event.h"
 #include "esp_log.h"
 #include "status_led.h"
 #include "esp_mac.h"
@@ -25,14 +24,8 @@ static const char *TAG = "PROVISIONING";
 #define PROVISIONING_TASK_PRIORITY 4
 #define PROVISIONING_TASK_CORE 0
 
-static TaskHandle_t s_grace_task;
 static TaskHandle_t s_ap_timeout_task;
-static volatile bool s_grace_cancelled;
 static volatile bool s_ap_timeout_cancelled;
-static esp_event_handler_instance_t s_grace_success_handler;
-static esp_event_base_t s_grace_success_event_base;
-static int32_t s_grace_success_event_id;
-static volatile bool s_grace_success_seen;
 static provisioning_reason_t s_active_reason = PROVISIONING_REASON_NONE;
 
 provisioning_reason_t provisioning_decide(const device_config_t *cfg)
@@ -43,8 +36,6 @@ provisioning_reason_t provisioning_decide(const device_config_t *cfg)
         reason = PROVISIONING_REASON_NO_CONFIG;
     } else if (!cfg->mesh_enable) {
         reason = PROVISIONING_REASON_MESH_DISABLED;
-    } else if (cfg->boot_fail_count >= PROVISIONING_BOOT_FAIL_THRESHOLD) {
-        reason = PROVISIONING_REASON_BOOT_FAIL_STREAK;
     } else {
         reason = PROVISIONING_REASON_NONE;
     }
@@ -265,95 +256,14 @@ esp_err_t provisioning_start_fallback_ap(provisioning_reason_t reason)
     return provisioning_arm_ap_timeout();
 }
 
-static void on_grace_window_success(void *arg,
-                                    esp_event_base_t base,
-                                    int32_t id,
-                                    void *data)
-{
-    (void)arg;
-    (void)base;
-    (void)id;
-    (void)data;
-    s_grace_success_seen = true;
-}
-
 /*
- * Both timed actions below used to be esp_timer callbacks. That task's
- * stack (CONFIG_ESP_TIMER_TASK_STACK_SIZE, 3584 bytes in this sdkconfig) is
- * too tight for what they actually do -- an NVS blob write here, plus
- * esp_wifi_stop() in the AP-timeout task below -- so each is instead a
- * one-shot FreeRTOS task with its own generous stack, created once when
- * armed and self-deleting when done. Cancellation (see provisioning_
- * cancel_ap_timeout()/_grace_window()) just sets a flag the task checks
- * after waking from its vTaskDelay, rather than tearing the task down from
- * outside: every caller of those cancel functions reboots the device a
- * moment later anyway, so letting the task's own delay run out is simpler
- * and avoids deleting a task that might be mid-way through an NVS write.
+ * The AP timeout used to be an esp_timer callback. That task's stack
+ * (CONFIG_ESP_TIMER_TASK_STACK_SIZE, 3584 bytes in this sdkconfig) is too
+ * tight for esp_wifi_stop(), so it is a one-shot FreeRTOS task with its own
+ * stack, created when armed and self-deleting when done. Cancelling just
+ * sets a flag the task checks after its delay: every caller reboots a
+ * moment later anyway.
  */
-
-static void grace_window_task(void *arg)
-{
-    (void)arg;
-    vTaskDelay(pdMS_TO_TICKS(PROVISIONING_GRACE_WINDOW_US / 1000LL));
-
-    if (s_grace_success_handler != NULL) {
-        esp_event_handler_instance_unregister(
-            s_grace_success_event_base, s_grace_success_event_id, s_grace_success_handler);
-        s_grace_success_handler = NULL;
-    }
-
-    if (!s_grace_cancelled) {
-        if (s_grace_success_seen) {
-            ESP_LOGI(TAG, "Station joined within grace window, resetting boot-fail streak");
-            device_config_set_boot_fail_count(0);
-        } else {
-            device_config_t cfg;
-            device_config_get(&cfg);
-            const uint8_t next = cfg.boot_fail_count + 1U;
-            ESP_LOGW(TAG,
-                     "No station joined within grace window, boot-fail streak now %u",
-                     (unsigned)next);
-            device_config_set_boot_fail_count(next);
-        }
-    }
-
-    s_grace_task = NULL;
-    vTaskDelete(NULL);
-}
-
-esp_err_t provisioning_arm_grace_window(esp_event_base_t success_event_base,
-                                        int32_t success_event_id)
-{
-    s_grace_success_seen = false;
-    s_grace_cancelled = false;
-    s_grace_success_event_base = success_event_base;
-    s_grace_success_event_id = success_event_id;
-
-    esp_err_t result = esp_event_handler_instance_register(
-        success_event_base,
-        success_event_id,
-        &on_grace_window_success,
-        NULL,
-        &s_grace_success_handler);
-    if (result != ESP_OK) {
-        ESP_LOGE(TAG, "Registering grace-window success handler failed: %s",
-                 esp_err_to_name(result));
-        return result;
-    }
-
-    if (xTaskCreatePinnedToCore(grace_window_task,
-                                "prov_grace",
-                                PROVISIONING_TASK_STACK,
-                                NULL,
-                                PROVISIONING_TASK_PRIORITY,
-                                &s_grace_task,
-                                PROVISIONING_TASK_CORE) != pdPASS) {
-        ESP_LOGE(TAG, "Creating grace-window task failed");
-        return ESP_FAIL;
-    }
-
-    return ESP_OK;
-}
 
 static void ap_timeout_task(void *arg)
 {
@@ -395,9 +305,4 @@ esp_err_t provisioning_arm_ap_timeout(void)
 void provisioning_cancel_ap_timeout(void)
 {
     s_ap_timeout_cancelled = true;
-}
-
-void provisioning_cancel_grace_window(void)
-{
-    s_grace_cancelled = true;
 }
