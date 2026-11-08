@@ -5,7 +5,7 @@
 
 # ESP32-S3 Mesh Snapserver
 
-**Updated:** 2026-10-08 · **Deutsch:** [README.md](README.md)
+**Updated:** 2026-11-08 · **Deutsch:** [README.md](README.md)
 
 Several speakers play the same music in sync, with no router, PC or cables in between. The ESP32-S3 boards build their
 own wireless network (ESP-Mesh-Lite) and pass the signal on from device to device.
@@ -42,6 +42,9 @@ or Edge. For the app an Android phone.
    **Save**. The server first, then the clients.
 3. Download **`SnapAnnounce-….apk`** from the release to your phone and install it.
 
+A client that does not get into the mesh, e.g. because of a wrong password: switch it off and on seven times, each
+time after a good minute. On the eighth start it opens `ESP32_provisioning_…` again.
+
 Board not showing up: try another cable, or hold BOOT while plugging it in (download mode). Without a browser, use
 [esptool](https://github.com/espressif/esptool/releases):
 ```bash
@@ -52,10 +55,8 @@ esptool --chip esp32s3 --before usb_reset write_flash 0x0 bootloader.bin 0x8000 
 
 ## Hardware
 
-I run a **complete system** in an amplifier (PCM5102A, TinySine AudioB as Bluetooth input through a TXB0104) and the
-**[SnapStreamer](#snapstreamer-build-idea)**. Any ESP32-S3 with at least 4 MB flash, octal PSRAM and USB-Serial/JTAG
-will do, e.g. a YD-ESP32-S3 N16R8
-([schematic](https://raw.githubusercontent.com/vcc-gnd/YD-ESP32-S3/main/5-public-YD-ESP32-S3-Hardware%20info/YD-ESP32-S3-SCH-V1.4.pdf)).
+Any ESP32-S3 with at least 4 MB flash, octal PSRAM and USB-Serial/JTAG will do.
+I use the cheapest clones (from the fast Ali, < €5), quite happy with them so far.
 
 | GPIO | Function |
 |---|---|
@@ -73,8 +74,8 @@ The pins can be changed, see [Pins](#pins).
 
 ## SnapStreamer build idea
 
-You have an amplifier or active speaker and want it in the mesh? The SnapStreamer is my idea for that: ESP32-S3, DAC
-and battery packed as tightly as possible into a small case.
+You have an amplifier or active speaker and want it in the mesh? The SnapStreamer can do that: ESP32-S3, DAC and
+battery packed tightly into a small case.
 
 <table>
   <tr>
@@ -135,7 +136,7 @@ Every device has a settings page at its IP or `snapserver-<MAC>.local` / `snapcl
 updates. From top to bottom, as in the picture of the server's page:
 
 **Status:** mesh active or not, connected clients (our own and other Snapcast clients), firmware version, boot-fail
-streak and uptime.
+streak (clients only) and uptime.
 
 **Devices (server only):** every speaker with name, depth in the mesh (hops), volume, mute and delay. You can change
 the name here, ± flips the sign of the delay. The server remembers the values per device, also when they come from a
@@ -202,18 +203,18 @@ The status LED flashes red, green and blue at startup and then shows the state:
 ## WLED
 
 [WLED](https://kno.wled.ge/) ([GitHub](https://github.com/wled/WLED)) is a free firmware for ESP8266 and ESP32
-that drives addressable LED strips, with effects, a web interface and an app. On an ESP32 or ESP32-S3 it drives up
-to 16,384 LEDs, at most 2048 per output, on an ESP8266 up to 1536.
-
-WLED controllers in the SnapMesh react to the music, no microphone needed.
+that drives addressable LED strips, with effects, a web interface and an app.
+SnapMesh supports WLED's native sync protocol. WLED controllers in the SnapMesh react to the digital audio stream,
+no microphone needed.
 
 1. In WLED, enable the **AudioReactive** usermod, set sync to **Receive**, port 11988 (default).
 2. Join the WLED to the SnapMesh Wi-Fi, with the mesh's SSID and password.
 
-The server's page lists every WLED with a link (`http://<server>:<port>/`).
+The server's page lists every WLED with a link (`http://<server>:<port>/`). Below the list is the **Strobe** button:
+tap it, and every WLED flashes white for 2.5 s. Then they carry on with their effect. For this, "Receive UDP realtime"
+under Sync Interfaces must be on in WLED (default).
 
-Up to four WLEDs per device. The device with a WLED spends 3–5 % of a core on it. WLED's own sync between WLEDs
-(effects, colours) does not cross devices.
+Up to four WLED controllers per SnapMesh device. The device a WLED hangs on spends 3–5 % of a core on it.
 
 ---
 
@@ -223,6 +224,8 @@ Up to four WLEDs per device. The device with a WLED spends 3–5 % of a core on 
 
 With **SnapAnnounce** you start announcements right in the mesh. No extra hardware, no cables, all from your phone.
 Android only, sorry: I don't have a Mac and I'm not buying one.
+
+Join the phone to the SnapMesh Wi-Fi, with the mesh's SSID and password.
 
 The music pauses meanwhile. Announcements run without a buffer and therefore reach **only two mesh levels** deep.
 

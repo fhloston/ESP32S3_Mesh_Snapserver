@@ -5,7 +5,7 @@
 
 # ESP32-S3 Mesh Snapserver
 
-**Stand:** 2026-10-08 · **English:** [README.en.md](README.en.md)
+**Stand:** 2026-11-08 · **English:** [README.en.md](README.en.md)
 
 Mehrere Lautsprecher spielen synchron dieselbe Musik, ohne Router, PC oder Kabel dazwischen. Die ESP32-S3 bauen sich
 ihr eigenes Funknetz (ESP-Mesh-Lite) und reichen das Signal von Gerät zu Gerät weiter.
@@ -41,6 +41,9 @@ Chrome oder Edge. Für die App ein Android-Handy.
 2. Mit dem WLAN **`ESP32_provisioning_…`** verbinden, **http://192.168.5.1/** öffnen, Rolle, Mesh-Name und Passwort
    eintragen, **Save**. Erst den Server, dann die Clients.
 3. **`SnapAnnounce-….apk`** aus dem Release aufs Handy laden und installieren.
+
+Kommt ein Client nicht ins Mesh, z. B. wegen eines falschen Passworts: siebenmal aus- und einschalten, jedes Mal nach
+gut einer Minute. Beim achten Start öffnet er wieder `ESP32_provisioning_…`.
 
 Taucht das Board nicht auf: anderes Kabel, oder BOOT gedrückt halten und einstecken (Download-Modus). Ohne Browser
 mit [esptool](https://github.com/espressif/esptool/releases):
@@ -133,7 +136,7 @@ Jedes Gerät hat eine Einstellungsseite unter seiner IP oder `snapserver-<MAC>.l
 Die Werte bleiben bei Updates erhalten. Von oben nach unten, wie im Bild die Seite des Servers:
 
 **Status:** Mesh aktiv oder nicht, verbundene Clients (eigene und fremde Snapcast-Clients), Firmware-Stand,
-Fehlstarts in Folge und Laufzeit.
+Fehlstarts in Folge (nur Clients) und Laufzeit.
 
 **Geräte (nur Server):** jeder Lautsprecher mit Namen, Tiefe im Mesh (Hops), Lautstärke, Stumm und Delay. Den Namen
 könnt ihr hier ändern, ± kehrt das Vorzeichen des Delays um. Der Server merkt sich die Werte je Gerät, auch wenn sie
@@ -202,15 +205,17 @@ Die Status-LED blitzt beim Start rot, grün und blau und zeigt danach den Zustan
 ## WLED
 
 [WLED](https://kno.wled.ge/) ([GitHub](https://github.com/wled/WLED)) ist eine freie Firmware für ESP8266 und
-ESP32, die adressierbare LED-Streifen steuert, mit Effekten, Web-Oberfläche und App. 
-Snapmech unterstützt das native WLED Sync Protokoll. Damit können WLED-Controller im SnapMesh auf den digitalen Audiostream reagieren, ohne eigenes Mikrofon.
+ESP32, die adressierbare LED-Streifen steuert, mit Effekten, Web-Oberfläche und App.
+SnapMesh unterstützt das native WLED-Sync-Protokoll. Damit können WLED-Controller im SnapMesh auf den digitalen Audiostream reagieren, ohne eigenes Mikrofon.
 
 1. In WLED den Usermod **AudioReactive** einschalten, Sync auf **Receive**, Port 11988 (Standard).
 2. Das WLED ins SnapMesh-WLAN hängen, mit SSID und Passwort des Mesh.
 
-Die Server-Seite listet jedes WLED mit Link (`http://<Server>:<Port>/`).
+Die Server-Seite listet jedes WLED mit Link (`http://<Server>:<Port>/`). Darunter steht der Knopf **Strobo**:
+antippen, und alle WLEDs blitzen 2,5 s lang weiß. Danach spielen sie ihren Effekt weiter. Dafür muss in WLED unter
+Sync Interfaces „Receive UDP realtime“ an sein (Standard).
 
-Bis zu vier WLED Controller pro Snapmesh Gerät. Das Gerät an dem WLED hängt, braucht dafür 3–5 % eines Kerns. 
+Bis zu vier WLED-Controller pro SnapMesh-Gerät. Das Gerät, an dem WLED hängt, braucht dafür 3–5 % eines Kerns.
 
 ---
 
