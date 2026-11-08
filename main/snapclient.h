@@ -70,8 +70,8 @@ void snapclient_set_unreachable_cb(void (*cb)(void));
 /*
  * Answers config requests from our own server (see
  * snapserver_remote_request()): gets the request JSON, returns the answer
- * as a malloc'd JSON string, which is sent back and freed. Without a
- * handler such requests go unanswered.
+ * as a malloc'd JSON string, which is sent back and freed; NULL sends
+ * nothing back. Without a handler such requests go unanswered.
  */
 void snapclient_set_config_handler(char *(*handler)(const char *json, size_t len));
 

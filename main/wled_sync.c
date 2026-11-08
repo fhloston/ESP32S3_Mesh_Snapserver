@@ -103,6 +103,27 @@ static const char *TAG = "WLED_SYNC";
 #define MAX_RELAYS         8
 #define RELAY_TIMEOUT_MS   3000
 
+/*
+ * Strobe, see wled_sync_strobe(). White flashes over WLED's UDP realtime
+ * protocol (DNRGB: type, timeout in s, first LED high/low, then RGB per
+ * LED), ten a second, 40 ms each. A packet is sent only when the light
+ * changes, so the edges fall on the 20 ms frames this task runs on. While
+ * the packets come, WLED shows them instead of its effect; the last one
+ * carries timeout 0, which sends it back to its effect at once. If that
+ * one is lost, WLED goes back by itself STROBE_TIMEOUT_S later.
+ */
+#define STROBE_PERIOD_US   (100LL * 1000LL)
+#define STROBE_LIT_US      (40LL * 1000LL)
+#define STROBE_MAX_MS      3000U
+#define STROBE_TIMEOUT_S   2U
+#define STROBE_RELEASES    2U
+#define DNRGB              4U
+#define DNRGB_HEADER       4U
+/* WLED reads at most 1472 bytes of a UDP packet. */
+#define DNRGB_MAX_LEDS     ((1472U - DNRGB_HEADER) / 3U)
+/* WLED's default port for sync and realtime; /json/info says otherwise. */
+#define REALTIME_PORT      21324U
+
 typedef struct {
     uint8_t  mac[6];
     uint32_t ip;          /* lwIP byte order, 0 = no lease yet */
@@ -115,6 +136,8 @@ typedef struct {
     int64_t  asked_us;    /* last time its address in the mesh was settled */
     char     name[33];
     char     url[WLED_SYNC_URL_LEN]; /* where the mesh reaches it, "" = not yet */
+    uint16_t leds;        /* LED count from /json/info, 0 = not given */
+    uint16_t udp_port;    /* its UDP port for realtime packets */
 } station_t;
 
 /* A forward this node keeps for a node below it. */
@@ -153,9 +176,18 @@ typedef struct {
 } reach_t;
 
 /* What the sync task sends to, written by the finder task. */
+typedef struct {
+    uint32_t ip;
+    uint16_t leds;
+    uint16_t udp_port;
+} target_t;
 static portMUX_TYPE s_targets_lock = portMUX_INITIALIZER_UNLOCKED;
-static uint32_t s_targets[MAX_WLEDS];
+static target_t s_targets[MAX_WLEDS];
 static size_t s_target_count;
+
+/* Strobe until this time, see wled_sync_strobe(). */
+static portMUX_TYPE s_strobe_lock = portMUX_INITIALIZER_UNLOCKED;
+static int64_t s_strobe_until_us;
 
 /* ------------------------------------------------------------------ */
 /* Audio side                                                         */
@@ -190,13 +222,13 @@ static void copy_window(uint32_t written)
 
 /* Carries over what is known about each WLED still in `targets`; reach[i]
  * then belongs to targets[i]. */
-static void update_reach(reach_t *reach, const uint32_t *targets, size_t count)
+static void update_reach(reach_t *reach, const target_t *targets, size_t count)
 {
     reach_t next[MAX_WLEDS] = {0};
     for (size_t i = 0; i < count; ++i) {
-        next[i].ip = targets[i];
+        next[i].ip = targets[i].ip;
         for (size_t j = 0; j < MAX_WLEDS; ++j) {
-            if (reach[j].ip == targets[i]) {
+            if (reach[j].ip == targets[i].ip) {
                 next[i] = reach[j];
                 break;
             }
@@ -272,6 +304,52 @@ static void check_reach(int fd, reach_t *reach, size_t count, int64_t now_us, ui
     }
 }
 
+/*
+ * One strobe step to every WLED that answers: all LEDs white or all dark,
+ * in as many DNRGB packets as its LED count needs. buf holds a full packet.
+ */
+static void send_strobe(int fd, const target_t *targets, const reach_t *reach, size_t count,
+                        bool lit, uint8_t *buf)
+{
+    memset(buf + DNRGB_HEADER, lit ? 0xFF : 0x00, DNRGB_MAX_LEDS * 3U);
+    buf[0] = DNRGB;
+    buf[1] = STROBE_TIMEOUT_S;
+    for (size_t i = 0; i < count; ++i) {
+        if (reach[i].holding) {
+            continue;
+        }
+        const struct sockaddr_in to = {
+            .sin_family = AF_INET,
+            .sin_port = htons(targets[i].udp_port),
+            .sin_addr.s_addr = targets[i].ip,
+        };
+        /* Without a count one packet's worth; WLED ignores LEDs it lacks. */
+        const unsigned leds = (targets[i].leds != 0U) ? targets[i].leds : DNRGB_MAX_LEDS;
+        for (unsigned first = 0U; first < leds; first += DNRGB_MAX_LEDS) {
+            const unsigned n = (leds - first < DNRGB_MAX_LEDS) ? leds - first : DNRGB_MAX_LEDS;
+            buf[2] = (uint8_t)(first >> 8);
+            buf[3] = (uint8_t)(first & 0xFFU);
+            (void)sendto(fd, buf, DNRGB_HEADER + n * 3U, MSG_DONTWAIT,
+                         (const struct sockaddr *)&to, sizeof(to));
+        }
+    }
+}
+
+/* Timeout 0: WLED leaves realtime mode and goes back to its effect. */
+static void send_strobe_release(int fd, const target_t *targets, size_t count)
+{
+    const uint8_t release[DNRGB_HEADER] = {DNRGB, 0U, 0U, 0U};
+    for (size_t i = 0; i < count; ++i) {
+        const struct sockaddr_in to = {
+            .sin_family = AF_INET,
+            .sin_port = htons(targets[i].udp_port),
+            .sin_addr.s_addr = targets[i].ip,
+        };
+        (void)sendto(fd, release, sizeof(release), MSG_DONTWAIT, (const struct sockaddr *)&to,
+                     sizeof(to));
+    }
+}
+
 static void sync_task(void *arg)
 {
     (void)arg;
@@ -294,6 +372,13 @@ static void sync_task(void *arg)
 
     uint32_t read = __atomic_load_n(&s_written, __ATOMIC_ACQUIRE);
     uint32_t idle_frames = 0U;
+
+    /* Strobe state, see STROBE_PERIOD_US. The packet buffer is taken at
+     * the first strobe. */
+    uint8_t *strobe_buf = NULL;
+    int64_t strobe_since_us = 0; /* 0 = not strobing */
+    bool strobe_lit = false;
+    unsigned strobe_releases = 0U;
 
     /* For the log line, see below. */
     int64_t stats_since_us = esp_timer_get_time();
@@ -340,7 +425,7 @@ static void sync_task(void *arg)
             level_max = packet.sample_smth;
         }
 
-        uint32_t targets[MAX_WLEDS];
+        target_t targets[MAX_WLEDS];
         size_t target_count;
         portENTER_CRITICAL(&s_targets_lock);
         target_count = s_target_count;
@@ -366,7 +451,7 @@ static void sync_task(void *arg)
                     ++held;
                     continue;
                 }
-                dst.sin_addr.s_addr = targets[i];
+                dst.sin_addr.s_addr = targets[i].ip;
                 if (sendto(fd, &packet, sizeof(packet), MSG_DONTWAIT,
                            (const struct sockaddr *)&dst, sizeof(dst)) == (int)sizeof(packet)) {
                     ++sent;
@@ -374,6 +459,38 @@ static void sync_task(void *arg)
                     ++send_errors;
                 }
             }
+        }
+
+        portENTER_CRITICAL(&s_strobe_lock);
+        const int64_t strobe_until_us = s_strobe_until_us;
+        portEXIT_CRITICAL(&s_strobe_lock);
+        if (now_us < strobe_until_us && strobe_buf == NULL) {
+            strobe_buf = heap_caps_malloc(DNRGB_HEADER + DNRGB_MAX_LEDS * 3U,
+                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (strobe_buf == NULL) {
+                ESP_LOGE(TAG, "No memory for the strobe");
+            }
+        }
+        if (now_us < strobe_until_us && strobe_buf != NULL) {
+            const bool starting = strobe_since_us == 0;
+            if (starting) {
+                strobe_since_us = now_us;
+                ESP_LOGI(TAG, "Strobe on");
+            }
+            const bool lit = (now_us - strobe_since_us) % STROBE_PERIOD_US < STROBE_LIT_US;
+            if (starting || lit != strobe_lit) {
+                send_strobe(fd, targets, reach, target_count, lit, strobe_buf);
+                strobe_lit = lit;
+            }
+            strobe_releases = STROBE_RELEASES;
+        } else if (strobe_releases > 0U) {
+            if (strobe_since_us != 0) {
+                ESP_LOGI(TAG, "Strobe off");
+                strobe_since_us = 0;
+            }
+            /* Twice, in case one gets lost. */
+            send_strobe_release(fd, targets, target_count);
+            --strobe_releases;
         }
 
         if (now_us - stats_since_us >= STATS_EVERY_US) {
@@ -458,8 +575,10 @@ static esp_err_t start_analysis(void)
 #define LOCK()   xSemaphoreTake(s_lock, portMAX_DELAY)
 #define UNLOCK() xSemaphoreGive(s_lock)
 
-/* Asks http://ip/json/info whether this is a WLED; its name on success. */
-static bool probe_wled(uint32_t ip, char *name, size_t name_len)
+/* Asks http://ip/json/info whether this is a WLED; on success its name,
+ * LED count (0 = not given) and UDP port. */
+static bool probe_wled(uint32_t ip, char *name, size_t name_len, uint16_t *leds,
+                       uint16_t *udp_port)
 {
     const esp_ip4_addr_t addr = {.addr = ip};
     char url[40];
@@ -495,6 +614,15 @@ static bool probe_wled(uint32_t ip, char *name, size_t name_len)
             if (cJSON_IsString(brand) && strcmp(brand->valuestring, "WLED") == 0) {
                 const cJSON *wled_name = cJSON_GetObjectItemCaseSensitive(root, "name");
                 strlcpy(name, cJSON_IsString(wled_name) ? wled_name->valuestring : "WLED", name_len);
+                const cJSON *count = cJSON_GetObjectItemCaseSensitive(
+                    cJSON_GetObjectItemCaseSensitive(root, "leds"), "count");
+                *leds = (cJSON_IsNumber(count) && count->valueint > 0 && count->valueint <= 65535)
+                            ? (uint16_t)count->valueint
+                            : 0U;
+                const cJSON *port = cJSON_GetObjectItemCaseSensitive(root, "udpport");
+                *udp_port = (cJSON_IsNumber(port) && port->valueint > 0 && port->valueint <= 65535)
+                                ? (uint16_t)port->valueint
+                                : REALTIME_PORT;
                 wled = true;
             }
             cJSON_Delete(root);
@@ -745,7 +873,9 @@ static void probe_stations(void)
         }
 
         char name[sizeof(copy.name)];
-        if (!probe_wled(copy.ip, name, sizeof(name))) {
+        uint16_t leds = 0U;
+        uint16_t udp_port = REALTIME_PORT;
+        if (!probe_wled(copy.ip, name, sizeof(name), &leds, &udp_port)) {
             continue;
         }
         LOCK();
@@ -754,10 +884,14 @@ static void probe_stations(void)
             const esp_ip4_addr_t addr = {.addr = s->ip};
             s->is_wled = true;
             s->port = wled_port(s->mac);
+            s->leds = leds;
+            s->udp_port = udp_port;
             strlcpy(s->name, name, sizeof(s->name));
-            ESP_LOGI(TAG, "WLED \"%s\" found at " IPSTR " (%02x:%02x:%02x:%02x:%02x:%02x)",
+            ESP_LOGI(TAG,
+                     "WLED \"%s\" found at " IPSTR " (%02x:%02x:%02x:%02x:%02x:%02x), "
+                     "%u LEDs, UDP port %u",
                      s->name, IP2STR(&addr), s->mac[0], s->mac[1], s->mac[2], s->mac[3],
-                     s->mac[4], s->mac[5]);
+                     s->mac[4], s->mac[5], (unsigned)leds, (unsigned)udp_port);
         }
         UNLOCK();
     }
@@ -859,12 +993,13 @@ static void update_forwards(void)
  * or off with them. */
 static void publish_targets(void)
 {
-    uint32_t targets[MAX_WLEDS] = {0};
+    target_t targets[MAX_WLEDS] = {0};
     size_t count = 0;
     LOCK();
     for (size_t k = 0; k < MAX_STATIONS && count < MAX_WLEDS; ++k) {
-        if (s_stations[k].present && s_stations[k].is_wled) {
-            targets[count++] = s_stations[k].ip;
+        const station_t *s = &s_stations[k];
+        if (s->present && s->is_wled) {
+            targets[count++] = (target_t){.ip = s->ip, .leds = s->leds, .udp_port = s->udp_port};
         }
     }
     UNLOCK();
@@ -948,6 +1083,17 @@ esp_err_t wled_sync_relay_forward(uint32_t child_ip, uint16_t port, char *url, s
     }
 
     return reach_from_mesh(port, url, url_len) ? ESP_OK : ESP_FAIL;
+}
+
+void wled_sync_strobe(uint32_t ms)
+{
+    if (ms > STROBE_MAX_MS) {
+        ms = STROBE_MAX_MS;
+    }
+    const int64_t until_us = (ms > 0U) ? esp_timer_get_time() + (int64_t)ms * 1000LL : 0;
+    portENTER_CRITICAL(&s_strobe_lock);
+    s_strobe_until_us = until_us;
+    portEXIT_CRITICAL(&s_strobe_lock);
 }
 
 size_t wled_sync_list(wled_sync_info_t *out, size_t max)

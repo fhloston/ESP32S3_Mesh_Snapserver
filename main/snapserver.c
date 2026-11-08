@@ -2727,6 +2727,71 @@ esp_err_t snapserver_remote_request(const char *id,
     return result;
 }
 
+/*
+ * Waits at most this long for a client's send mutex: a sender stuck on a
+ * slow client must not hold up the web server, and the page repeats the
+ * message anyway.
+ */
+#define NOTIFY_MUTEX_WAIT_MS 50
+
+size_t snapserver_notify_own_clients(const char *json)
+{
+    if (!s_started || json == NULL) {
+        return 0U;
+    }
+    const size_t json_len = strlen(json);
+    if (json_len == 0U || json_len > RX_MAX - sizeof(uint32_t)) {
+        return 0U;
+    }
+
+    /* Header, length, JSON in one buffer: one send, all or nothing. */
+    const uint32_t len = (uint32_t)json_len;
+    const size_t total = sizeof(snap_base_t) + sizeof(len) + json_len;
+    uint8_t *msg = malloc(total);
+    if (msg == NULL) {
+        return 0U;
+    }
+    memcpy(msg + sizeof(snap_base_t), &len, sizeof(len));
+    memcpy(msg + sizeof(snap_base_t) + sizeof(len), json, json_len);
+
+    size_t reached = 0U;
+    for (int i = 0; i < MAX_CLIENTS; ++i) {
+        client_t *client = &s_clients[i];
+        portENTER_CRITICAL(&s_clients_lock);
+        const bool wanted = client->active && client->ready && client->is_snapmesh;
+        portEXIT_CRITICAL(&s_clients_lock);
+        if (!wanted || client->send_mutex == NULL ||
+            xSemaphoreTake(client->send_mutex, pdMS_TO_TICKS(NOTIFY_MUTEX_WAIT_MS)) != pdTRUE) {
+            continue;
+        }
+        int fd = -1;
+        portENTER_CRITICAL(&s_clients_lock);
+        if (client->active && client->ready && client->fd >= 0) {
+            fd = client->fd;
+        }
+        portEXIT_CRITICAL(&s_clients_lock);
+        if (fd >= 0) {
+            /* id 0: the client sends no answer, and none would match. */
+            int32_t sec;
+            int32_t usec;
+            now_ts(&sec, &usec);
+            snap_base_t base;
+            memset(&base, 0, sizeof(base));
+            base.sent_sec = sec;
+            base.sent_usec = usec;
+            base.type = SNAP_TYPE_SNAPMESH_CONFIG;
+            base.size = (uint32_t)(sizeof(len) + json_len);
+            memcpy(msg, &base, sizeof(base));
+            if (send_all(fd, msg, total, true) == 0) {
+                ++reached;
+            }
+        }
+        xSemaphoreGive(client->send_mutex);
+    }
+    free(msg);
+    return reached;
+}
+
 size_t snapserver_client_count(size_t *own)
 {
     size_t total = 0;

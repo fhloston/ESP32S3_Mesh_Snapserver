@@ -28,7 +28,8 @@ esp_err_t webconfig_start(void);
  * Snapcast connection -- {"op":"get_config"}, {"op":"status"} or
  * {"op":"set_config","config":{...}} -- with what the matching route here
  * would answer; a save that needs it schedules the reboot. Returns a
- * malloc'd JSON string for the caller to free(), NULL when out of memory.
+ * malloc'd JSON string for the caller to free(), NULL when out of memory
+ * and for {"op":"strobe","ms":n}, which gets no answer.
  */
 char *webconfig_handle_remote_request(const char *json, size_t len);
 

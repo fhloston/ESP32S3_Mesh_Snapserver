@@ -835,10 +835,49 @@ static esp_err_t api_wled_forward_post_handler(httpd_req_t *req)
 }
 
 /*
+ * Strobe on the WLEDs, body {"ms": n}: for the next n ms (at most 3000),
+ * 0 = stop. The page renews it every 400 ms while the button is held. The
+ * server passes it on to every client, which strobes its own WLEDs.
+ */
+static esp_err_t api_wled_strobe_post_handler(httpd_req_t *req)
+{
+    char body[64];
+    if (read_body(req, body, sizeof(body)) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad request body");
+        return ESP_OK;
+    }
+    cJSON *request = cJSON_Parse(body);
+    const cJSON *ms = cJSON_GetObjectItemCaseSensitive(request, "ms");
+    const bool valid = cJSON_IsNumber(ms) && ms->valuedouble >= 0.0;
+    const uint32_t duration_ms =
+        valid ? (uint32_t)((ms->valuedouble > 3000.0) ? 3000.0 : ms->valuedouble) : 0U;
+    cJSON_Delete(request);
+    if (!valid) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "ms missing");
+        return ESP_OK;
+    }
+
+    wled_sync_strobe(duration_ms);
+    size_t clients = 0U;
+    device_config_t cfg;
+    device_config_get(&cfg);
+    if (cfg.role == DEVICE_ROLE_SERVER) {
+        char json[48];
+        snprintf(json, sizeof(json), "{\"op\":\"strobe\",\"ms\":%u}", (unsigned)duration_ms);
+        clients = snapserver_notify_own_clients(json);
+    }
+
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddNumberToObject(resp, "clients", (double)clients);
+    return send_json(req, resp);
+}
+
+/*
  * Client role: a request the server forwards from its device list over the
  * Snapcast connection (snapserver_remote_request()), because it cannot
  * reach this page itself once the client sits behind another node's NAPT.
- * Answers exactly what the matching route here would.
+ * Answers exactly what the matching route here would. A strobe request
+ * (snapserver_notify_own_clients()) gets no answer.
  */
 char *webconfig_handle_remote_request(const char *json, size_t len)
 {
@@ -846,6 +885,15 @@ char *webconfig_handle_remote_request(const char *json, size_t len)
     const cJSON *op = cJSON_GetObjectItemCaseSensitive(request, "op");
     cJSON *resp = NULL;
     bool needs_reboot = false;
+
+    if (cJSON_IsString(op) && strcmp(op->valuestring, "strobe") == 0) {
+        const cJSON *ms = cJSON_GetObjectItemCaseSensitive(request, "ms");
+        if (cJSON_IsNumber(ms) && ms->valuedouble >= 0.0) {
+            wled_sync_strobe((uint32_t)((ms->valuedouble > 3000.0) ? 3000.0 : ms->valuedouble));
+        }
+        cJSON_Delete(request);
+        return NULL;
+    }
 
     if (!cJSON_IsString(op)) {
         resp = cJSON_CreateObject();
@@ -1255,7 +1303,7 @@ esp_err_t webconfig_start(void)
     config.server_port = WEBCONFIG_PORT;
     config.stack_size = 8192;
     /* The default of 8 is too few for the routes registered below (13). */
-    config.max_uri_handlers = 14;
+    config.max_uri_handlers = 16;
     /*
      * A browser keeps several connections open per host, an Android
      * WebView up to six, and a phone that roams to another mesh AP drops
@@ -1304,6 +1352,7 @@ esp_err_t webconfig_start(void)
         { .uri = "/api/devices/config", .method = HTTP_POST, .handler = timed_handler, .user_ctx = (void *)api_device_config_post_handler },
         { .uri = "/api/devices/status", .method = HTTP_GET, .handler = timed_handler, .user_ctx = (void *)api_device_status_get_handler },
         { .uri = "/api/wled-forward", .method = HTTP_POST, .handler = timed_handler, .user_ctx = (void *)api_wled_forward_post_handler },
+        { .uri = "/api/wled-strobe", .method = HTTP_POST, .handler = timed_handler, .user_ctx = (void *)api_wled_strobe_post_handler },
     };
 
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); ++i) {

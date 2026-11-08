@@ -158,6 +158,15 @@ esp_err_t snapserver_remote_request(const char *id,
                                     char **reply,
                                     uint32_t timeout_ms);
 
+/*
+ * Sends a JSON request to every one of our own clients and waits for no
+ * answer, e.g. {"op":"strobe"}: the client handles it in
+ * webconfig_handle_remote_request() and answers nothing. A client whose
+ * connection is busy right now misses it, so the caller repeats what must
+ * arrive. Returns how many clients it went to.
+ */
+size_t snapserver_notify_own_clients(const char *json);
+
 #ifdef __cplusplus
 }
 #endif

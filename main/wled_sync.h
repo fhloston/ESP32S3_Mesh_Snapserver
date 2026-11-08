@@ -65,6 +65,15 @@ size_t wled_sync_list(wled_sync_info_t *out, size_t max);
  */
 esp_err_t wled_sync_relay_forward(uint32_t child_ip, uint16_t port, char *url, size_t url_len);
 
+/*
+ * Strobe on every WLED on this device's access point for the next `ms`
+ * (at most 3000); 0 stops it at once. The page renews it while the button
+ * is held, so a page that goes away stops the strobe within that time. On
+ * the server the request also goes to every client (webconfig.c). WLED
+ * needs "Receive UDP realtime" on (Sync Interfaces, on by default).
+ */
+void wled_sync_strobe(uint32_t ms);
+
 /* Hands one frame of the output, before the volume, to the analysis.
  * Called from the audio path; copies and returns, never blocks. Does
  * nothing while no WLED is around. */
