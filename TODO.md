@@ -65,22 +65,6 @@ stehen in [docs/notizen.md](docs/notizen.md).
 - **WLED an BDFC:** Signalstärke des WLED ins Log, um die Ping-Lücken von
   1,5–3 s zuzuordnen.
 
-## Nächstes Release
-
-Release-Notizen schreiben (`docs/releases/<tag>.md`). Seit v0.5.3:
-
-- Opus rechnet mit Festkomma statt Gleitkomma.
-- USB-Soundkarte am Server (Schalter in der Web-UI, Neustart zum Flashen).
-- WLED: wird erkannt und bekommt die Musik, Link auf der Server-Seite,
-  Strobo-Knopf.
-- Durchsagen verdecken Funkaussetzer, statt still zu werden.
-- Client startet neu, statt Root zu werden (Wächter).
-- Ein/Aus-Taster schaltet erst nach 1 s Halten ein.
-- Gerätename überall mit zwei MAC-Bytes.
-- Der Server zählt keine Fehlstarts mehr und fällt ohne Clients nicht mehr
-  in den Einrichtungsmodus. Clients zählen weiter.
-- Slave-Takt 80 MHz und Glitch-Filter aus v0.5.2 sind wieder ausgebaut.
-
 ## Ideen
 
 - OTA über die Web-Seite. Die Partitionen sind da, es fehlt der Teil in
