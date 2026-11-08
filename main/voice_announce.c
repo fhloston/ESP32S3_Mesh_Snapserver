@@ -44,7 +44,7 @@ static const char *TAG = "VOICE";
 #define VOICE_CLIENT_TASK_STACK 10240
 /* Same tier as server_task/CLIENT_TASK/SENDER_TASK (5), strictly below
  * audio_task's 6 -- existing priorities are deliberately left untouched,
- * see TODO.md on the reverted priority experiment. */
+ * see docs/notizen.md on the reverted priority experiment. */
 #define VOICE_TASK_PRIORITY        5
 
 /*

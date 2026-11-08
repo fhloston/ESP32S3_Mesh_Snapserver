@@ -1,6 +1,7 @@
 # Code-Review: Sprachdurchsagen (Branch `test/voice`)
 
-Stand 2026-09-19, Basis `7ba6726` + uncommittete Änderungen.
+Stand 2026-09-19, Basis `7ba6726` + uncommittete Änderungen. Was seitdem
+umgesetzt ist, steht unter „Stand 2026-11-08“.
 
 **Geprüft:** alle Änderungen für die Sprachdurchsagen — `main/voice_announce.c/.h`,
 die Anpassungen in `audio_sink.c`, `audio_i2s.c`, `snapserver.c`, `snapcontrol.c`,
@@ -53,10 +54,33 @@ Hardware reproduziert (Stack-Overflow in `snapctrl_conn` beim ersten
 | N1 | Die LED wird während der Durchsage jeden Frame gesetzt und danach passend zur Quelle zurückgestellt. |
 | N2 | Nur UDP von der IP der Owner-Verbindung wird verteilt. |
 | N3 | Ablehnung als `result.busy`; die App unterscheidet „läuft schon“ und „Firmware kann das nicht“. |
-| M3 | offen, nach dem ersten Hörtest |
+| M3 | umgesetzt, siehe unten |
 
 Nebenbei gefunden und behoben: `tools/voice_test.py` hätte bei einer
 Ablehnung `Voice.Stop` geschickt und damit die fremde Durchsage beendet.
+
+**Stand 2026-11-08:**
+
+- **M3 umgesetzt.** Erst als PCM-Mailbox mit 20 ms Vorpuffer und 60 ms
+  Kapazität. Seit 2026-10-10 (a8c0249) ersetzt durch `voice_playout.c`:
+  Pakete statt PCM puffern, nach Sequenznummer abspielen, ein fehlendes
+  Paket per Opus-PLC verdecken, zu viel Puffer bevorzugt in Sprechpausen
+  abbauen. Einzelheiten und Messungen in [notizen.md](notizen.md),
+  „Durchsage: Abspielen nach Sequenznummer“.
+- **Zwei Tasks am Server** (2026-09-19). `voice_server_task` empfängt,
+  filtert und leitet weiter, und wartet dabei nie. Solange er auch
+  dekodierte, hielt jede langsame Dekodierung das nächste Weiterleiten auf,
+  und die Level-1-Clients liefen 15 % der Zeit leer. Das Dekodieren lief
+  danach in einem eigenen Task für den Lautsprecher. Seit 2026-10-10
+  dekodieren Server und Clients im Audiopfad, ein Paket pro fälligem Frame.
+- **Eine Ebene tiefer** (2026-09-20, d82ea99): Clients leiten die Durchsage
+  einmal weiter, Level-2-Clients hören sie, statt stumm zu sein.
+- **Ende der Durchsage** nach 1 s ohne Pakete statt 400 ms (2026-09-29,
+  5c522dc).
+- `tools/voice_test.py` passte nicht mehr zur Opus-Firmware und ist entfernt
+  (2026-10-07).
+- Die App wird seit v0.2.0 mit jedem Release gebaut. Auf Hardware zuletzt
+  gemessen am 2026-10-10 (B688, BDFC, 1940).
 
 ---
 

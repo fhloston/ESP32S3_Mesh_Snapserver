@@ -1,0 +1,1006 @@
+# Entwicklungsnotizen
+
+Hintergründe, Messungen und Erledigtes. Was noch zu tun ist, steht in
+[TODO.md](../TODO.md).
+
+## Neu 2026-11-08
+
+- **Fehlstart-Zähler entfernt.** Jedes Gerät wartete nach dem Start 60 s
+  auf eine Station: der Server auf einen Client an seinem AP, ein Client
+  auf seinen eigenen Beitritt. Kam keine, zählte es hoch; ab 7 startete es
+  statt des Mesh den offenen Einrichtungs-AP. Ein Server ohne Clients fiel
+  so beim achten Start in den Einrichtungsmodus. Jetzt startet jedes Gerät
+  immer ins Mesh, außer nach dem ersten Flashen, nach Werkseinstellungen
+  oder bei ausgeschaltetem Mesh. Ein Client, der nicht ins Mesh kommt (z. B.
+  falsches Passwort), bleibt dabei und sucht weiter; zurück geht es nur über
+  Flashen mit „Erase device“. Das Feld im gespeicherten Einstellungsblock
+  bleibt als `unused_boot_fail_count` stehen, damit der Block sein Format
+  behält und die Einstellungen beim Update erhalten bleiben.
+- **Strobo für die WLEDs.** Auf der Server-Seite unter „WLED“, solange ein
+  WLED gefunden ist. Gedrückt halten: Die Seite schickt
+  `POST /api/wled-strobe {"ms":1200}` alle 400 ms, beim Loslassen
+  `{"ms":0}`; geht die Seite weg, endet der Strobo nach 1,2 s von selbst.
+  Der Server gibt es an jeden eigenen Client weiter
+  (`snapserver_notify_own_clients()`, Nachrichtentyp 100 ohne Antwort).
+  Jedes Gerät blitzt seine eigenen WLEDs über WLEDs UDP-Echtzeitprotokoll
+  DNRGB an (Port aus `/json/info`, sonst 21324): 10 Blitze pro Sekunde,
+  40 ms weiß, Pakete nur bei jedem Wechsel, bis 489 LEDs je Paket. Das
+  letzte Paket hat Timeout 0, dann spielt WLED sofort wieder seinen Effekt;
+  geht es verloren, nach 2 s. Voraussetzung in WLED: „Receive UDP
+  realtime“ (Sync Interfaces, Standard an). WLEDs an verschiedenen Geräten
+  blitzen nicht im Gleichtakt; jedes Gerät beginnt, wenn die Nachricht
+  ankommt. Auf Hardware noch nicht getestet.
+- **`audio_i2s_clock_ppm()` entfernt**, siehe unten.
+
+## Beobachtet, Ursache offen
+
+Keine Aufgabe, solange es nicht wieder auftritt.
+
+- **Musik-Abriss ohne Anlass:** BDFC verlor 2026-10-10 um 22:02 für 7 s die
+  Musikverbindung und baute sie neu auf (1,5 s stumm). Die Abrisse um 22:40
+  und 22:56 kamen von einem verschwundenen WLED (siehe „WLED-Anbindung“);
+  ob das auch um 22:02 so war, ist nicht belegt.
+- **Durchsage:** zweimal 80 ms Stille in der Sprache (BDFC und 1940, Pakete
+  über 100 ms zu spät, 2026-10-10 23:33/23:34). Funkstörung, wenn ein Knoten
+  während einer Durchsage beitritt.
+- **WLED an BDFC:** Das WLED antwortete immer wieder 1,5–3 s lang nicht auf
+  Pings (neunmal in sechs Minuten, an B688 vorher nie), die LED-Daten
+  setzen dann aus.
+- **Einbruch beim Abgang eines Clients:** wird überbrückt (siehe
+  „Aussetzer beim Client-Abgang“), ein Stau über ~2,4 s verliert Audio.
+- **Fusion- und Reconnect-Intervall** (`mesh_client.c`): erste Verdächtige,
+  falls regelmäßige kleine Einbrüche auftauchen, siehe Stufe 8 und 9.
+
+## Code-Analyse und Stufen 1–6
+
+Aus einer Code-Analyse (2026-09-16) auf `test/fixup`. Alle identifizierten
+Bugs sind umgesetzt:
+
+- Stufe 1: Client-Slot-Leak durch fehlenden Recv-Timeout/Keepalive
+  (Commit 151007f)
+- Stufe 2: Unsynchronisierter 64-Bit-Zugriff auf die Zeitbasis + tote
+  Kconfig-Option `SNAPSERVER_MESH_ROOT_ONLY` (Commit 585758d)
+- Stufe 3: Race bei `client->peer` beim Slot-Recycling (Commit 7d6fb86)
+- Stufe 4 (aus Live-Log 2026-09-17 gefunden): `audio_task` versendet
+  Wire-Chunks synchron und blockierend an jeden Client nacheinander
+  (`SO_SNDTIMEO`=2s). Ein einzelner langsamer/überlasteter Client konnte die
+  I2S-Capture-Pipeline dadurch für alle Clients bis zu mehrere Sekunden
+  blockieren (im Log bis 2,6s Drift beobachtet). Fix: Vor jedem Send prüft
+  `client_socket_writable()` per Zero-Timeout-`select()`, ob der Socket
+  aktuell beschreibbar ist; falls nicht, wird der Chunk für diesen Client
+  übersprungen (`chunks_skipped`-Zähler) statt die Pipeline zu blockieren.
+  Auf dem Gerät verifiziert: keine Drift-Warnungen mehr bei parallel
+  belastetem Client.
+- Stufe 5 (Code-Review auf `test/provisioning`, 2026-09-17, Effort `high`,
+  12 Befunde): Passwort-Leak bei 1-7-Zeichen-Mesh-Passwort (offener AP,
+  aber `/api/config` gab das Passwort weiterhin heraus); Config-Server
+  konnte durch einen hängenden POST dauerhaft blockiert werden
+  (`esp_http_server` ist single-threaded); Build brach bei
+  `SNAPSERVER_ENABLE_MESH_LITE=n` (zwei verschiedene Ursachen: abhängige
+  Kconfig-Symbole existieren nicht, und ein bool-Kconfig-Symbol ist bei `n`
+  gar nicht definiert, nicht `0` — beides in `device_config.c` gefixt und
+  mit `idf.py build` bei deaktiviertem Mesh gegengeprüft); SSID-Länge bei
+  genau 32 Zeichen falsch berechnet (`strlcpy`-Ziel vs. Quelle); NVS-Writes
+  im knapp bemessenen `esp_timer`-Task-Stack statt eigenem Task;
+  `device_config_t`-Cache ohne Synchronisation zwischen HTTP- und
+  Timer-Task; Factory-Reset konnte durch einen noch laufenden
+  Grace-Window-Write still rückgängig gemacht werden; `schedule_reboot()`
+  konnte einen NULL-Timer starten; Config-Seite startete erst nach
+  Audio-Init (bei Audio-Fehler nie erreichbar); dazu zwei
+  Design-Entscheidungen: Provisioning-AP rebootet nicht mehr nach 3 Minuten
+  (schaltet nur noch den Funk ab, Wiedereinstieg nur per Power-Cycle oder
+  Save), und ein Save während aktivem Provisioning-AP rebootet jetzt immer.
+  Auf dem Gerät verifiziert: normaler Mesh-Boot ohne Regression, Config-Web-
+  server startet jetzt vor Audio-Init. Nicht auf dem Gerät verifizierbar
+  (damals kein WLAN-fähiges Zweitgerät verfügbar): Passwort-
+  Ablehnung <8 Zeichen per curl, 32-Zeichen-SSID im WLAN-Scan, volles
+  3-Minuten-Timeout-ohne-Reboot-Fenster, Stresstest paralleler Saves
+  während des Grace-Windows — siehe Plan-Datei für den vollständigen
+  Verifikationsplan. Grace-Window und Fehlstart-Zähler gibt es seit
+  2026-11-08 nicht mehr (siehe oben).
+
+- Stufe 6 (Feature auf `test/ServerClient`, Plan aus Analyse der Client-Rolle
+  und des Referenzprojekts `ESP32_Mesh_Snapclient`, Stufe 1 von 2): der
+  ESP32-S3 kann nun per NVS-Feld `role` wahlweise als Server (Mesh-Root, wie
+  bisher) oder als Client (Mesh-Non-Root-Relay, Snapcast-Empfang) booten,
+  umschaltbar über die Web-Config-Seite, Übernahme per Reboot. Neu:
+  `mesh_client.c` (Non-Root-Join, nie Leaf — ein Leaf könnte in der
+  schlauchförmigen Zieltopologie keine Kinder annehmen; Server-Adresse über
+  `esp_mesh_lite_get_root_ip()`, da lokales DHCP-Gateway ab Level 3 nur den
+  Elternknoten liefert und mDNS die NAPT-Grenze zwischen den Ebenen nicht
+  überquert), `snapclient.c` (Snapcast-Protokoll, portiert aus dem
+  Referenzprojekt, aber ohne A2DP/Bluetooth — der ESP32-S3 hat kein
+  Bluetooth Classic — und mit tatsächlicher Auswertung von Rate/Kanälen aus
+  dem CodecHeader statt hartcodiertem Stereo, da unser eigener Server mono
+  sendet), `audio_sink.c` (Quellen-Arbiter zwischen Netzwerk-Audio und
+  lokalem I2S-Eingang als Ersatz für die A2DP-Priorität der Referenz,
+  PSRAM-Ringpuffer). `audio_i2s.c` wurde dafür in Capture- und
+  DSP+Ausgabe-Hälfte aufgetrennt (`audio_i2s_capture_mono()`/
+  `audio_i2s_write_mono()`), ohne das bestehende Server-Verhalten zu ändern.
+  `bufferMs` ist jetzt konfigurierbar statt hart 1000 (Server sendet den
+  Wert aus `device_config`, Client dimensioniert seinen Ringpuffer danach).
+  Auf dem Gerät verifiziert: Build sauber, sowohl mit
+  `CONFIG_SNAPSERVER_ENABLE_MESH_LITE=y` als auch `=n`. Nicht verifiziert
+  (damals kein zweites WLAN-fähiges Testgerät verfügbar):
+  tatsächlicher Mesh-Join als Non-Root, Snapcast-Wiedergabe, automatische
+  Quellenumschaltung auf den lokalen Eingang, Rollenwechsel per Reboot.
+  Stufe 2 (noch offen): Zeit-Sync (`SNAP_MSG_TIME`) und Drift-Kompensation,
+  damit mehrere Clients über Stunden synchron bleiben — siehe Plan-Datei.
+
+## Themen
+
+- **Spotify direkt auf den Server (2026-10-19, nur besprochen, nichts
+  gebaut).** Ziel: Musik ohne Zusatzmodul auf den Server, gern per
+  Spotify. Bluetooth fällt aus: Der ESP32-S3 kann nur Bluetooth LE, kein
+  Classic, also kein A2DP; auch kein LE Audio. Das TinySine-Modul ist
+  der Umweg über I2S und zählt nicht als direkt.
+  - **Spotify Connect mit cspot** (C++, ESP-IDF, nur Premium):
+    Die Spotify-App ist dann nur Fernbedienung, der Server holt die
+    Musik selbst. Er braucht also eigenes Internet; das Internet des
+    Handys hilft ihm nicht, außer das Handy macht einen Hotspot und der
+    Server meldet sich dort als Station an.
+  - **Internet am Server:** Es gibt keinen Router-Code. Der Root leert
+    seine Station-Einstellungen (`provisioning_clear_sta_wifi()`) und
+    startet Mesh-Lite mit `join_mesh_ignore_router_status = true`.
+    Einschalten ist klein: Router-SSID/-Passwort in Einstellungen und
+    Seite, `esp_mesh_lite_set_router_config()`, nicht mehr leeren.
+    Offen, nur auf Hardware zu klären: Das Mesh folgt dem Kanal des
+    Hotspots (muss 2,4 GHz sein); ist der Hotspot weg, sucht der Root
+    ihn und verlässt dafür seinen Kanal (Verdacht auf Aussetzer, siehe
+    „Fusion-Intervall“); gibt der Hotspot 192.168.5.x aus, will die
+    Bridge das Netz des Servers verlegen, das auf 192.168.5.1 festsitzt.
+  - **Ton:** Spotify liefert 44,1 kHz, der Stream läuft mit 48 kHz
+    (Resampler gibt es, `audio_resample.c`); Umschalten gegenüber I2S
+    und USB; Lautstärke aus der App.
+  - **Platz:** TLS, Vorbis-Dekoder und Opus auf einem Chip. Am
+    2026-10-17 hatte der Server ~80 KB internes RAM frei, Leerlauf
+    59 % auf Kern 1 und 72 % auf Kern 0. Ob es reicht, ist nicht
+    gemessen.
+  - **Lizenz:** cspot steht unter der GPLv3 (`LICENSE.md`). Mit cspot
+    fällt die verteilte Firmware als Ganzes unter die GPLv3; der eigene
+    Code bleibt MIT.
+  - **Alternative ohne Internet am Server:** SnapAnnounce schneidet den
+    Ton der Spotify-App mit (Android ab 10) und schickt ihn an den
+    Server. Apps können das verbieten; ob Spotify es tut, ist nicht
+    geprüft. Test: Bildschirmaufnahme mit Ton „Medien“, während
+    Spotify spielt.
+  - **Vorgehen, falls es angegangen wird:** erst die Hotspot-Anbindung
+    am Server bauen und testen (Musik ruhig? Hotspot aus und wieder an?),
+    dann cspot einbauen und Flash, RAM und Rechenzeit messen.
+
+- **WLED-Anbindung (2026-10-10, `feat/wled-sync`).** Jedes Gerät fragt die
+  Stationen in seinem eigenen WLAN nach `/json/info`; antwortet ein WLED,
+  wertet es aus, was sein Lautsprecher gerade spielt (vor der Lautstärke,
+  Durchsagen inklusive), und schickt alle 20 ms ein AudioReactive-Paket
+  (Format „00002“, Port 11988) direkt an das WLED. Ohne WLED läuft keine
+  Analyse; einen Schalter gibt es nicht.
+  - Analyse eigener Bauart (WLED steht unter EUPL, übernommen sind nur
+    Paketformat und die 16 Frequenzbereiche): Hann-Fenster, 1024-Punkte-FFT
+    aus esp-dsp (beim Start gegen die eigene FFT geprüft, Abweichung 1e-6),
+    Bänder in dB, eine langsame Pegelautomatik, Beat aus dem Bass gegen
+    seine Schwankung der letzten halben Sekunde.
+  - Rechenzeit gemessen: Client 0,5–0,7 ms pro Frame, 3–3,6 % von Kern 1
+    (bei Stille 0,1 ms); Server 1 ms, 5 % von Kern 0. Erste Fassung mit
+    `double` und Puffern im PSRAM brauchte 1,4–1,9 ms.
+  - Erreichbarkeit: Hinter einem Client liegt das WLED hinter dessen NAPT.
+    Jeder Client bis zur zweiten Ebene leitet den Port des WLED (aus seiner
+    MAC, 20000–39999) eine Ebene nach unten weiter, der Server nimmt die
+    Verbindung selbst an (`wled_proxy.c`): sein Access Point reicht nichts
+    zwischen zwei seiner Stationen weiter (ein Laptop am Server konnte
+    einen Client am Server nicht einmal anpingen). Die Server-Seite listet
+    jedes WLED mit `http://<Server>:<Port>/`; aus dem Laptop am Server
+    getestet.
+  - Erst wurde per Multicast an alle Stationen gesendet, also auch an
+    Handys; jetzt nur noch an erkannte WLEDs.
+  - Verschwundenes WLED: Ein WLED, das ausgesteckt wird oder neu startet,
+    bleibt rund 30 s in der Stationsliste des Access Points, und alles,
+    was in der Zeit an es geht, wiederholt der Funk ins Leere. Gesehen
+    2026-10-10 im Dauerlauf (22:40, WLED-Neustart an B688) und
+    nachgestellt (22:56, Stecker am WLED an BDFC gezogen): Die Musik riss
+    an BDFC und 1940 ab, beide Male genau so lange, wie das Gerät noch an
+    das WLED sendete -- auch noch, als das WLED längst an einem anderen
+    Knoten hing. Jetzt pingt jedes Gerät seine WLEDs zweimal pro Sekunde
+    und hält die Pakete an, solange 1,5 s keine Antwort kam; ein WLED, das
+    nie auf Pings antwortet, bekommt sie wie vorher. Gleicher Test
+    danach (23:04, WLED an B688): nach 1,5 s angehalten, 921 Pakete
+    zurückgehalten, 0 Sendefehler, kein Abriss, kein Unterlauf.
+  - Effekte mit einer echten LED-Kette geprüft (2026-10-17): sie folgen
+    der Musik und den Durchsagen.
+
+- **Durchsage: Abspielen nach Sequenznummer (2026-10-10).** Gemessen pro
+  Durchsage: kaum verlorene Pakete, aber rund zehn Abstände von 40–150 ms
+  in neun Sekunden, die meisten schon auf der Strecke Handy → Server. Die
+  alte 60-ms-PCM-Mailbox spielte dann Stille, wartete auf einen neuen
+  Vorpuffer und warf die nachkommenden Pakete weg. Jetzt
+  (`voice_playout.c`, Server und Clients): Pakete statt PCM puffern,
+  dekodieren, wenn der Frame fällig ist; ein fehlendes Paket mit Nachfolgern
+  wird verdeckt (Opus-PLC), bei einem Stau wird bis zu 100 ms verdeckt und
+  gewartet, danach läuft der Takt weiter; zu viel Puffer wird abgebaut,
+  bevorzugt das kleinste von vier Paketen (Sprechpause), je weiter über
+  dem Ziel, desto schneller. Vorpuffer unverändert 20 ms.
+  - In der Simulation gegen die alte Mailbox bei gleichen Ankunftszeiten:
+    mittlere und höchste Verzögerung gleich oder niedriger (120-ms-Stau pro
+    Sekunde: 37 statt 46 ms, Spitze 130 statt 150 ms), keine Stille in der
+    Sprache, etwa gleich viele verlorene Pakete.
+  - Auf dem Gerät (B688, BDFC, 1940): Server 552 gespielt, 7 verdeckt,
+    keine Stille in der Sprache; Clients 15–22 verdeckt; Puffer im Mittel
+    19–28 ms; der Player hielt seinen Takt (keine Neusynchronisation). Klang
+    im Hörtest gut.
+  - Jede Durchsage schreibt jetzt die Ankunftsabstände ins Log
+    („Phone -> server arrival“, „Server -> client arrival“).
+
+- **Encoder-Last am Server (2026-10-10).** `opus_audio` 67–69 % von Kern 1
+  bei Musik, der Encoder allein 9,3 ms pro Frame (47 %). Mit 32 KB
+  Befehls-Cache 63–64 % (Encoder 9,1 ms), für 16 KB internen RAM; nicht
+  übernommen. Während einer Durchsage läuft der Encoder ohnehin mit
+  Komplexität 0. Kein Handlungsbedarf.
+
+- **Durchsage: Rechenzeit vor dem USB-Eingang klären (vorgemerkt
+  2026-09-30).** Reihenfolge: erst die beiden Kern-Punkte, dann NVS, dann
+  USB.
+  1. **Reserve auf Kern 1 bei Durchsagen.** Die Komplexität des
+     Musik-Encoders sinkt während einer Durchsage schon auf 0
+     (`VOICE_MUSIC_COMPLEXITY` in `voice_announce.c`). Seit 2026-09-29
+     kosten Begrenzer-Vorausschau und Kompressor auf Kern 1 zusätzlich etwa
+     8 Prozentpunkte (14E4 als Client: `audio_sink` 44 → 52 %). Seit dem
+     Build mit `-O2` (9fcced3, 2026-10-02) braucht der Encoder laut
+     v0.5.2 etwa 75 statt 90–97 % eines Kerns.
+
+     **Festkomma statt Gleitkomma (umgestellt 2026-10-08).** Gemessen auf
+     BDFC mit einem vorübergehenden Benchmark: 250 Frames à 20 ms, festes
+     Testsignal (Akkord, Sweep, leises Rauschen), Einstellungen wie im
+     Server, eigener Task auf Kern 1 vor dem Start von WLAN und Audio.
+
+     | Messung | Gleitkomma | Festkomma |
+     |---|---|---|
+     | Encode Musik c=5, 96 kbit/s | 9412 µs | 8787 µs (−6,6 %) |
+     | Encode Musik c=0 (Durchsage) | 6807 µs | 5466 µs (−19,7 %) |
+     | Decode Musik 48 kHz (Clients) | 3593 µs | 3309 µs (−7,9 %) |
+     | Decode Sprache 16 kHz → 48 kHz | 2788 µs | 1173 µs (−58 %) |
+
+     Während einer Durchsage (Encode c=0 plus Decode Sprache) sind das
+     zusammen 47,9 statt 33,2 % von Kern 1; den echten Durchsagebetrieb
+     habe ich danach nicht gemessen. `opus_audio` im Betrieb auf BDFC:
+     38,6 → 36,7 %, mit dem Signal, das dort gerade am Eingang lag. Das
+     Image ist 31 kB kleiner. Den Klang habe ich noch nicht verglichen.
+  2. **Anstieg von tiT/wifi auf Kern 0 bei Durchsagen verstehen.** Drei
+     UDP-Ströme mit je ~25 kbit/s erklären ihn nicht. Verdacht: viele kleine
+     Pakete, Retransmits oder das Mesh-Relay. Messen (Pakete je Sekunde,
+     Retransmits), bevor Kern 0 weitere Aufgaben bekommt.
+  3. **NVS-Schreibzugriffe in `client_store` entprellen (erledigt
+     2026-10-02, 3b60e7f).** Der Server schreibt erst 3 s nach der letzten
+     Änderung, in eigenem Task. Vorher stand die Aufnahmeschleife bei jedem
+     Schritt eines Lautstärke-Sliders 53 ms, bei 40 ms I2S-Puffer.
+  4. **USB-Audio, je Rolle eine Richtung, kein Duplex auf einem Gerät.**
+     - Server: USB als **Eingang** (UAC2-Wiedergabe vom PC), Feedback-Endpoint
+       auf dem I2S-Takt, Jitter-Puffer im PSRAM, USB-Task auf Kern 0.
+       Quellenwahl USB / I2S, etwa automatisch nach Aktivität.
+     - Client: USB als **Ausgang**, der Client ist USB-*Gerät* (UAC2-Aufnahme):
+       ein PC am Client bekommt den synchronen Mesh-Ton als Mikrofon. Takt
+       einfach, die Aufnahme läuft im geregelten I2S-Takt des Clients.
+       Nicht gemeint: Client als USB-Host für einen USB-DAC (Takt vom DAC,
+       `usb_host_uac` meist nur UAC 1.0, deutlich aufwendiger).
+     - Der native USB-Port gehört dann dem Audio; Log und Flashen über die
+       COM-Buchse (CH343) der YD-Boards.
+     - NVS: Die UAC2-Lautstärke vom PC nicht speichern (der PC setzt sie
+       beim Verbinden neu) oder nur nach Ruhezeit. Grund neben dem
+       Verschleiß: Jeder Flash-Schreib- oder Löschvorgang schaltet den Cache
+       ab, Code im Flash und das PSRAM (Jitter-Puffer) stehen dann bis zu
+       einige zehn ms. Deshalb Punkt 3 vorher, USB-Interrupts im IRAM, und
+       den Jitter-Puffer so groß, dass er einen Schreibvorgang überbrückt.
+
+     **Server-Eingang umgesetzt 2026-10-08 (Branch `feat/usb-uac`).**
+     `main/usb_audio.c`: UAC1 statt UAC2 (Full-Speed; Windows ab 7 und Linux
+     bringen UAC1-Treiber mit und lesen das Feedback nach Spec),
+     48 kHz, Stereo, 16 Bit, Feedback über den FIFO-Füllstand (TinyUSB
+     `AUDIO_FEEDBACK_METHOD_FIFO_COUNT`). Die Aufnahmeschleife leert den
+     FIFO im I2S-Takt; spielt der PC (Signal in den letzten 2 s), ersetzen
+     seine Samples die vom I2S. Notfall-Ausgleich ±1 Frame, wenn der
+     Füllstand mehr als 8 ms neben dem Sollwert liegt. Lautstärke und Stumm
+     nur am Master, nicht gespeichert. Schalter `usb_audio` in der Web-UI
+     (Neustart), nur Server. „Neustart zum Flashen“ startet in den
+     Download-Modus des ROM; danach normal mit `--before usb_reset`
+     flashen (mit `no_reset` bleibt DTR = GPIO0 aktiv, der Reset danach
+     landet wieder im Download-Modus). Kein Timeout dort, bewusst so
+     gelassen. Der Wechsel zwischen OTG und USB-Serial-JTAG trennt jeweils
+     erst sauber vom Bus, sonst bemerkt der Host nichts.
+
+     Geprüft: Linux (Erkennung, Wiedergabe, FIFO um die Hälfte, keine
+     Unterläufe oder Ausgleichs-Frames), Windows 11 (Wiedergabe, Umschalten
+     PC / I2S / Durchsage, USB-Audio aus → native Buchse wieder COM),
+     Neustart zum Flashen und Flashen über die native Buchse am Linux-Host
+     (B688, Log über COM). Kosten: TinyUSB 10,5 KB internes RAM fest, mit
+     USB-Audio an rund 4,5 KB mehr; `opus_audio` unverändert.
+
+- **Ein/Aus-Taster als Soft-Off per Deep Sleep (vorgemerkt 2026-09-30,
+  umgesetzt 2026-10-01, 4ba38ce).** Taster an einem RTC-fähigen Pin
+  (GPIO 1–21) gegen GND, wählbar auf der Pin-Seite. 2 s halten = aus: LED
+  dunkel, DOUT auf LOW gehalten (als Master auch BCLK/LRCLK), nach dem
+  Loslassen Deep Sleep. Grenze: Der Chip braucht im Deep Sleep µA, das
+  Board nicht -- LDO, Power-LED, WS2812 (~1 mA auch dunkel), PCM5102A und
+  CH343 ziehen weiter einige mA. Echtes Aus bleibt der Schalter am Poti.
+
+  Einschalten erst nach 1 s Halten (2026-10-08, auf Hardware noch nicht
+  getestet). Bis dahin weckte jeder Druck, ein Stoß in der Tasche schaltete
+  das Gerät ein. Jetzt prüft `power_button_boot()` als Erstes in
+  `app_main`, ob der Taster 1 s unten bleibt; sonst geht der ESP sofort
+  wieder schlafen, ohne NVS anzufassen und ohne die gehaltenen Pins
+  freizugeben. Zu prüfen: kurzer Druck bleibt aus, 1 s Halten schaltet
+  ein, Halten bis über 2 s schaltet danach nicht gleich wieder aus.
+  **Offen:**
+  `power_button.c` sichert keine ausstehenden NVS-Schreibvorgänge.
+  `client_store` schreibt seit 3b60e7f erst 3 s nach der letzten Änderung
+  und hat keine Flush-Funktion; wer den Server in diesen 3 s ausschaltet,
+  verliert die letzte Änderung.
+
+- **Pinbelegung und Geräteliste (2026-09-23), auf dem Gerät noch nicht
+  getestet.** Gebaut mit IDF 5.4.3, die Webseite gegen eine nachgebaute API
+  geprüft (jsdom). Auf Hardware zu prüfen: Update eines bestehenden Geräts
+  ändert keine Pins; Pinwechsel samt Neustart; Probestart-Rückfall nach drei
+  missglückten Starts (z. B. absichtlich mit `abort()` nach
+  `audio_i2s_start()`); Hops bei einem Client auf Ebene 3; Lautstärke/Delay
+  überleben einen Reconnect und einen Server-Neustart. Die Screenshots in
+  `docs/` zeigen noch die alte Seite.
+
+- **Nächste Schritte dazu:** (1) Geräteliste in der Android-App — die Daten
+  stehen schon in `Server.GetStatus` (`snapmesh.hops`), Änderungen kommen
+  als `Server.OnUpdate`. (2) **Erledigt 2026-09-23, auf dem Gerät noch
+  nicht getestet:** Pinbelegung und übrige Einstellungen eines Clients vom
+  Server aus ändern. Kein eigener Steuerkanal nötig: Der Server schickt die
+  Anfrage als eigenen Nachrichtentyp (100) über die Snapcast-Verbindung, die
+  der Client ohnehin zum Root aufbaut und die deshalb durchs NAT geht
+  (`snapserver_remote_request()`, beantwortet von
+  `webconfig_handle_remote_request()`). Die Seite gegen eine nachgebaute API
+  geprüft (jsdom). Auf Hardware zu prüfen: Werte eines Clients laden und
+  speichern, Neustart nach Pinwechsel samt Neuladen, Client auf Ebene 3.
+
+- **Client-Konfiguration auch in der App (erledigt 2026-09-23, auf dem Handy
+  noch nicht getestet).** Mischform: Tab „Geräte" mit nativer Liste
+  (Lautstärke, Mute, Delay, Name über `/api/devices`), die vollständigen
+  Einstellungen eines Geräts als eingebettete Firmware-Seite
+  (`/?device=<id>&embed=1`), damit Formular und Pin-Logik nur an einer
+  Stelle gepflegt werden. Zu prüfen: Erreichbarkeit mit aktiven mobilen
+  Daten (Prozessbindung ans WLAN), WebView-Dialog beim Factory Reset,
+  Delay-Knöpfe auf schmalen Displays.
+
+- **Unkomplizierte Verteilung (umgesetzt 2026-09-23, läuft seit v0.2.0;
+  zuletzt v0.5.3 am 2026-10-02 mit Firmware-Teilen, Gesamt-Image, APK und
+  `THIRD_PARTY_LICENSES.txt`).** `.github/workflows/release.yml` baut bei
+  einem Tag `v*` Firmware (`espressif/esp-idf-ci-action`, IDF 5.4.3, nur
+  aus `sdkconfig.defaults`) und das signierte APK, hängt beides an das
+  GitHub-Release und stellt die Flash-Seite (`flasher/`, ESP Web Tools)
+  auf GitHub Pages. Ein manueller Lauf baut nur, als Probe vor dem Tag.
+  - **Updates schreiben vier Teile** (Bootloader `0x0`, Partitionstabelle
+    `0x8000`, App `0x10000`, leeres `otadata` `0x3D0000`). Das Gesamt-Image
+    aus `merge_bin` füllt
+    `0x9000–0xFFFF` mit `0xFF` und löscht damit NVS und PHY-Daten; es ist
+    nur für Neuinstallationen gedacht (geprüft 2026-09-23).
+  - `sdkconfig.defaults` ergibt jetzt exakt das `sdkconfig` der Geräte
+    (frischer Klon, 0 Abweichungen). Wer eine Option per `menuconfig`
+    ändert, muss sie dort nachtragen, sonst baut CI etwas anderes.
+  - Der Keystore der App liegt bei mir und als Secret in GitHub; geht
+    er verloren, lässt sich die App nur noch per Deinstallieren updaten.
+  - Offen: OTA über die Web-Oberfläche. Braucht OTA-Partitionen (siehe
+    nächster Punkt) und einmal ein komplettes Neuflashen mit Löschen.
+    Später denkbar: F-Droid oder Play Store.
+
+- **Firmware auch auf Boards mit weniger Flash (umgesetzt 2026-09-24; läuft
+  auf den 16-MB-Boards, ein Board mit 4 oder 8 MB Flash ist ungetestet).**
+  Image-Header auf 4 MB
+  (`CONFIG_ESPTOOLPY_FLASHSIZE_4MB`), `partitions.csv` passt in 4 MB. Dasselbe
+  Image läuft damit auf N8R8 und N16R8. ESP-IDF bricht nur ab, wenn der Chip
+  *kleiner* ist als der Header (`esp_flash_spi_init.c`); ein größerer bleibt
+  ungenutzt. `nvs` (`0x9000`) und `phy_init` (`0xF000`) liegen unverändert,
+  deshalb ist **kein Löschen** nötig: Ein Board mit dem alten 16-MB-Layout
+  behält beim Update seine Einstellungen, solange `otadata` leer mitgeschrieben
+  wird. Sonst läge dort ein Rest der alten App, und der Bootloader müsste ihn
+  als ungültig verwerfen. Zu prüfen auf einem Board mit altem Layout:
+  Start aus `ota_0`, `Config loaded from NVS`, Pins unverändert. Octal-PSRAM
+  bleibt Voraussetzung; Quad-PSRAM (N8R2/N16R2) bräuchte eine zweite Variante
+  mit `SPIRAM_MODE_QUAD`.
+
+- **OTA über die Web-Seite (offen).** Die Partitionen sind seit 2026-09-24
+  vorbereitet (`ota_0`/`ota_1` je 1,875 MB, `otadata`), es fehlt der Teil in
+  der Firmware: Upload-Route in `webconfig.c` (`esp_ota_begin/write/end`,
+  `esp_ota_set_boot_partition`), ein Feld auf der Seite, für Clients der Weg
+  über den Server, und am besten Rollback (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`,
+  bestätigen wie bei `device_config_confirm_pins()`). Achtung: Nach einem
+  OTA-Update startet das Board aus `ota_1`; der Browser-Flasher schreibt die
+  App nach `ota_0` und setzt `otadata` zurück, das passt also weiter.
+  Keine Coredump-Partition; in den 184 KB hinter `otadata` wäre Platz dafür.
+
+- **Lautstärke der Quelle wirkt auf alle Clients gemeinsam (gemeldet
+  2026-09-17):** Wird am A2DP-Gerät, das den I2S-Eingang des Servers
+  speist, die Lautstärke verändert, ändert sich der Pegel für sämtliche
+  Clients gleichzeitig. Das ist derzeit systembedingt und kein Fehler im
+  engeren Sinn: Die Regelung sitzt **vor** der Aufnahme, der Server
+  encodiert also bereits das abgesenkte Signal, und jeder Client bekommt
+  es so. Zwei Konsequenzen daraus, die zusammen gehören:
+  1. **Erledigt 2026-09-18:** Das Snapcast-Protokoll hat eine Lautstärke
+     **pro Client**, die der Server bereits verwaltet
+     (`client->volume_percent`, über `Client.SetVolume` der JSON-RPC in
+     `snapcontrol.c`) und nach jeder Änderung erneut in den ServerSettings
+     annonciert. Der Client wertet `volume`/`muted` jetzt aus und wendet
+     sie an. Die Kette ist damit über eine Snapcast-Control-App komplett
+     bedienbar. Angewendet wird am Ende des Wiedergabepfads, nicht beim
+     Einspeisen — sonst wäre der Pegel im Ringpuffer eingebacken und eine
+     Änderung erst `buffer_ms` später hörbar. Die Kennlinie ist kubisch
+     (perzeptive Näherung, sonst drängt sich der ganze nutzbare Bereich
+     ins obere Ende des Reglers); falls sie in der Praxis zu steil wirkt,
+     ist sie in `audio_sink_set_volume()` mit einer Zeile zu ändern.
+  2. **Bleibt offen:** Damit das etwas nützt, muss die Quelle auf
+     konstantem Pegel bleiben (A2DP-Lautstärke voll aufdrehen und nicht
+     mehr anfassen), sonst multipliziert sich beides. Den Pegel der Quelle
+     zurückzurechnen geht ohne Rückkanal vom A2DP-Empfänger nicht sauber.
+  3. **Erledigt 2026-09-23:** Die Geräteliste oben auf der Server-Seite
+     stellt Lautstärke, Stummschaltung und Delay pro Client ein.
+  4. **Erledigt 2026-09-23:** Lautstärke, Stummschaltung, Latenz und ein
+     vergebener Name werden pro Client-ID im NVS gehalten
+     (`client_store.c`, bis 24 Clients, danach fällt der am längsten nicht
+     geänderte heraus) und bei jedem Hello wieder eingespielt.
+
+- **Clients im laufenden Mesh konfigurieren (gemeldet 2026-09-17):** Aktuell
+  ist unklar dokumentiert, wie man an die Config-Seite eines Clients kommt,
+  der bereits im Mesh hängt. Beim Durchsehen der Logs zeigt sich, dass der
+  Fall einfacher liegt als früher in diesem Projekt angenommen, aber nur
+  für die erste Ebene:
+  - Ein Client, der direkt am Root hängt, bekommt seine STA-Adresse aus dem
+    DHCP des Roots und liegt damit im **selben** Subnetz wie ein Handy, das
+    sich mit dem Root-AP verbindet (im Log: Root-AP `192.168.5.1`, Client
+    `192.168.5.2`). Dazwischen liegt kein NAT — `http://192.168.5.2/`
+    sollte also bereits heute funktionieren. Das ist ungetestet und wäre
+    als Erstes zu verifizieren, weil es ohne jede Codeänderung auskäme.
+  - Ab Ebene 3 greift die NAT-Schachtelung von `esp_bridge` wieder: ein
+    Enkelknoten liegt hinter dem NAT seines Elternknotens und ist von oben
+    nicht adressierbar.
+  - Es fehlt in jedem Fall die Auffindbarkeit — welche IP gehört zu welchem
+    Gerät. Der Server kennt das bereits (`client[i]`-Statuszeile mit IP und
+    Hostname aus dem Hello) und könnte es auf seiner Config-Seite als Liste
+    mit Links anzeigen. Das wäre der kleinste sinnvolle Schritt.
+  - Für tiefere Ebenen bliebe ein Proxy über den Server (Weiterleitung an
+    einen ausgewählten Knoten über die Mesh-Lite-interne Verbindung) — das
+    ist deutlich aufwendiger und sollte erst geplant werden, wenn die
+    Topologie wirklich mehr als zwei Ebenen hat.
+  - **Stand 2026-09-23:** Erledigt ohne Proxy über Mesh-Lite: „Settings"
+    in der Geräteliste zeigt die Einstellungen eines Clients auf der
+    Server-Seite, der Weg läuft über dessen Snapcast-Verbindung (siehe
+    „Nächste Schritte dazu" oben). Die IP-Links sind entfallen.
+
+- **Root-Failover-Risiko im Client-Modus (aus Analysegespräch 2026-09-17;
+  Wächter umgesetzt 2026-10-08, auf Hardware noch nicht getestet):**
+  `esp_mesh_lite_set_disallowed_level(1)` in `mesh_client.c` schließt den
+  Client beim regulären Beitritt sicher von der Root-Rolle aus
+  (API-Vertrag, keine Timeout-basierte Übernahme). Die Mesh-Lite-Doku
+  beschreibt aber einen separaten Selbstheilungspfad bei
+  Root-Ausfall ("Root Node Failure"), bei dem ein Kind-Knoten nach
+  mehreren fehlgeschlagenen Reconnect-Versuchen selbst Root werden kann —
+  dort beschrieben für den Router-verbundenen Modus ("connect directly to
+  the router"), was auf unser No-Router-Setup (Client hat keine
+  Router-Config) vermutlich nicht direkt zutrifft. `esp_mesh_lite_core`
+  liegt nur als vorkompilierte `.a` vor (`lib/libesp_mesh_lite_esp32s3.a`),
+  daher nicht quellcodeseitig verifizierbar, ob `disallowed_level` auch in
+  diesem Pfad greift. Ich stufe das Risiko als kritisch ein: würde
+  der Client dennoch Root werden, kollidiert er mit dem echten Server-Root
+  und bleibt es dauerhaft, da nichts in unserem eigenen Code den
+  Mesh-Level nach dem Boot überprüft.
+
+  Vorgeschlagene Absicherung (2026-09-17, umgesetzt mit Neustart statt
+  `esp_wifi_stop()`, siehe unten):
+  periodischer Wächter in `mesh_client.c`, der `esp_mesh_lite_get_level()`
+  zyklisch abfragt und bei Level 1 sofort `esp_wifi_stop()` auslöst
+  (gleiches Muster wie der Provisioning-AP-Timeout) statt den Client
+  stillschweigend als Root weiterlaufen zu lassen.
+
+  Pflicht-Testszenario vor Stufe 2: Server im laufenden Betrieb
+  ausschalten, während ein Client verbunden ist, und das Client-Log
+  beobachten — bisher ungetestet.
+
+  **Stand 2026-10-07, Doku von Mesh-Lite 1.0.2 nachgelesen:** Drei
+  Stellen sprechen dafür, dass der Fall nicht eintritt, belegt ist es
+  weiterhin nicht. (1) `User_Guide.md`, Abschnitt „Root Node Failure“:
+  „If all nodes except the disconnected root node are not allowed to be
+  Level 1, self-healing cannot be performed.“ Das ist unser Aufbau. (2)
+  `CHANGELOG.md` zu 1.0.2: „The device disallowed as root node will not
+  request to be included in the will list“, also nicht in die Liste der
+  Root-Kandidaten. (3) Espressifs Beispiel `no_router` trennt Root und
+  Kinder genau wie wir (`set_allowed_level(1)` / `set_disallowed_level(1)`).
+  Ein Server-Neustart bei laufenden Clients kam seitdem oft vor; ein
+  Client als Root ist dabei nicht aufgefallen, gezielt geprüft wurde es
+  aber nie. Zur Reaktion des Wächters: `esp_wifi_stop()` lässt den Client
+  bis zum Aus- und Einschalten stumm, auch wenn der Server nach Sekunden
+  zurück ist. Die Alternative ist ein Neustart, dann begrenzt auf einen
+  pro Minute, damit keine Schleife entsteht.
+
+  **Umgesetzt 2026-10-08:** `root_guard_cb()` in `mesh_client.c` fragt
+  jede Sekunde `esp_mesh_lite_get_level()` ab. Steht der Client 5 s am
+  Stück auf Level 1, startet er neu und tritt wieder als Relay bei,
+  frühestens 60 s nach dem Start; so startet er höchstens einmal pro
+  Minute neu. Spielt er gerade seinen lokalen I2S-Eingang, startet er
+  nicht neu, sondern erst 60 s nach dessen Ende; startet der Eingang in
+  dieser Zeit wieder, beginnen die 60 s nach seinem nächsten Ende von
+  vorn. Jeder Wechsel des Levels steht im Log (`Mesh level …`).
+  Test: Server ausschalten, während mehrere Clients laufen, und deren Logs
+  1–2 min mitschneiden. Die Zeilen zeigen dann auch, welchen Level ein
+  Knoten ohne Parent meldet. Das ist nicht bekannt; meldet er dabei 1,
+  startet jeder Client ohne Server einmal pro Minute neu, und der Wächter
+  muss anders prüfen.
+
+- Stufe 6 Nachbesserungen (erster echter Zwei-Geräte-Test auf `test/
+  ServerClient`, 2026-09-17): vier Bugs beim tatsächlichen Betrieb
+  gefunden und gefixt: (1) `esp_mesh_lite_get_root_ip()` liefert die IP
+  mit vertauschter Byte-Reihenfolge zurück (`192.168.5.1` kam als
+  `1.5.168.192` an) — Client fand den Server dadurch nie; Fix per
+  `__builtin_bswap32()` in `mesh_client.c`. (2) Jeder Client hatte eine
+  eigene, MAC-suffigierte SSID (`SnapMesh_XXXXXX`), was bei mehreren
+  Clients zu SSID-Wildwuchs führte; Mesh-Lite erkennt Eltern-Knoten aber
+  über eine Vendor-IE-Kennung im Beacon, nicht über den SSID-Text, daher
+  jetzt einheitliche SSID (identisch zum Server) für alle Rollen. (3)
+  Jedes Gerät (Server und alle Clients) meldete denselben mDNS-Namen
+  `snapserver.local`, wodurch DNS/mDNS-Caches beim Wechsel zwischen
+  Geräten auf der falschen Config-Seite landen konnten; jetzt eindeutiger
+  Name pro Rolle+MAC (`snapserver-XXXXXX`/`snapclient-XXXXXX`). (4) Der
+  Server trennt einen Client nach 30s Funkstille von dessen Seite
+  (`CLIENT_RECV_TIMEOUT_US`, gedacht um tote Verbindungen zu erkennen) —
+  unser eigener Snapclient sendet aber (Zeit-Sync ist ja erst Stufe 2)
+  nichts zurück und wurde dadurch zuverlässig alle ~31s getrennt; Fix:
+  `snapclient.c` sendet jetzt alle 2s eine leere `SNAP_MSG_TIME`-Anfrage
+  rein als Herzschlag (Antwort wird ignoriert). Zusätzlich fiel auf, dass
+  der Ringpuffer trotz `buffer_ms=3000` in der Praxis nur 40-120ms Füllstand
+  hielt, weil `audio_sink.c` sofort bei der ersten eintreffenden
+  Netzwerk-Anfrage umschaltete statt erst ein Polster aufzubauen — jede
+  kleine Timing-Schwankung erzeugte dadurch einen hörbaren Underrun; Fix:
+  Umschalten auf Netzwerkquelle erst ab 80% Füllstand
+  (`NETWORK_PREBUFFER_PERCENT`), spätere Einbrüche lösen kein erneutes
+  Prebuffering mehr aus.
+
+  Auf dem Gerät verifiziert: Client verbindet nach den Fixes zuverlässig
+  zum Server, Ringpuffer füllt sich wie erwartet, `output_rms`-Log
+  bestätigt echtes Signal am Ausgang. Nicht behoben: deutliches Knistern
+  im Audio, das bei mir auch am **Server** selbst auftritt (dort ohne
+  jede Code-/HW-Änderung an diesem Pfad) und nur bei aktivem Stream zu
+  hören ist, nicht bei Stille — daher software-, nicht hardwarebedingt.
+  Klingt nach ca. einer Minute Laufzeit spürbar ab. Ursache nicht
+  identifiziert, von mir zurückgestellt statt weiter untersucht.
+
+  **Wieder aufgetreten 2026-09-23:** nach einem Flash des Servers (19:43)
+  knackten Server-Lautsprecher und alle Clients, auch der Android-Snapclient,
+  über Minuten, ohne abzuklingen. Quelle war ein iPhone per A2DP am TinySine,
+  beides lief unverändert weiter; ein Neustart aller ESPs (19:48) hat es
+  beseitigt. Die Server-Statistik war in beiden Zuständen unauffällig
+  (~52 Chunks/s je Client, `skipped=0`, Frame-Abstand 20 ms ± 6 ms,
+  I2S-Takt < 150 ppm, 84 kB interner Heap frei). Es hängt also an einem
+  Zustand, den der Server beim Start einnimmt, nicht an Quelle, Funk oder
+  Last. Nächster Schritt, wenn es wieder auftritt: Uhrzeit notieren und den
+  Server-Log um diesen Start herum mit einem sauberen Start vergleichen.
+
+  **Vorerst als gelöst betrachtet (2026-10-07), bei Bedarf neu aufmachen.**
+  Die Artefakte vom 2026-09-20 mit ähnlichem Bild waren Fehler A (unten).
+
+  **Stand 2026-09-24 -- mehrere unabhängige Fehler um den TinySine:**
+  - *Stream und A2DP überlagert (geklärt):* Auf dem Android lief die
+    Snapcast-App im Hintergrund und spielte den Stream per Bluetooth in den
+    TinySine. Die Firmware gab nachweislich nur den lokalen Eingang aus;
+    nach Beenden der App war es weg. Kein Firmwarefehler.
+  - *A -- nur A2DP gestört, zeitweise (behoben 2026-09-25 mit
+    Pegelwandler):* **Ursache: der TinySine AudioB I2S V2r0 arbeitet mit
+    1,8 V I2S-Pegel** (gemessen; der ESP32-S3 braucht für High laut
+    Datenblatt 0,75 x 3,3 V = 2,5 V). Der ESP tastete DIN damit zu knapp
+    an der Flanke ab: je nach Start, und auch mitten im Betrieb, kippten
+    Bits -- mal wenige in den unteren Bits, mal Zehntausende je 5 s. Der
+    ADAU1701 kam mit dem Pegel zurecht. **Abhilfe: TXB0104 zwischen
+    TinySine und ESP** -- VCCA 1,8 V (TinySine-Seite), VCCB 3,3 V, OE an
+    VCCA, A1/B1 BCK, A2/B2 LRCK, A3/B3 SD, A4 an GND; der PCM5102A bleibt
+    direkt am ESP. Jeder TinySine braucht einen solchen Wandler. Der
+    ISO1540 taugt nicht (I2C-Isolator, Open-Drain, max. 1 MHz).
+    Belege (Testton 1 kHz, Sinus-Vorhersage: jedes Sample aus den beiden
+    vorherigen, Abweichung > 1024 = Fehler; Testfirmware nicht committet):
+    B6:88 ohne Wandler 3 von 9 Starts gestört (4-22 s lang), mit Wandler
+    0 von 16; 14:E4 mit Wandler 0 von 8.
+    Verworfene Ansätze: 24-Bit-Slots/2,304 MHz (der erste Versuch lief mit
+    MCLK 256 x fs bei 51,2 kHz statt 48 kHz, der zweite mit 384 x fs korrekt
+    -- Fehler unverändert); weichere Taktflanken (GPIO_DRIVE_CAP_0 an
+    BCLK/LRCLK: jeder Start gestört). Die DIN-Abtastverzögerung
+    (`I2S_RX_TIMING_REG.rx_sd_in_dm`, 1 = eine Flanke später) beendete am
+    Server jede Störphase innerhalb von 20-40 ms, war an 14:E4 aber in
+    einzelnen Phasen selbst gestört -- ohne Wandler nur eine Notlösung.
+  - *B -- beide Quellen knacksen (erledigt, Versorgung):* an 14:E4, Stream
+    und A2DP gleichermaßen, Daten im ESP nachweislich sauber
+    (Schadenszähler am Ausgang 0). Mit Netzteil statt USB „quasi weg“, am
+    COM-Port (CH343) statt am nativen USB ganz weg. Im Zielaufbau läuft
+    die Versorgung ohnehin anders; nicht weiter verfolgt. Der PCM5102A ist
+    nicht defekt.
+  - *C -- Knacksen 2-3,5 s nach dem Stopp von A2DP (weitgehend behoben):*
+    Der TinySine treibt SD nach dem Stopp nicht mehr; die offene Leitung
+    fing Übersprechen von BCLK/LRCLK ein (100-ms-Spur: Pakete von -33 bis
+    -90 dBFS). Der interne Pull-down an I2S DIN (`audio_i2s_start()`) senkt
+    das auf meist -84 bis -120 dBFS, einzelne Reste bis -55. Ganz weg nur
+    mit externem Pull-down (4,7-10 kOhm SD -> GND); der ADAU1701 hat solche
+    Pull-downs von Haus aus. Mit TXB0104 hängt der Pull-down auf der
+    3,3-V-Seite; lässt der TinySine SD offen, hängt A3 frei. Kehrt das
+    Knacksen nach dem Stopp zurück: 100 kOhm von A3 nach GND (der TXB
+    verträgt keine Pull-Widerstände unter etwa 50 kOhm).
+
+  **Drift der Clients, behoben 2026-09-24:** Seit 2026-09-19 schrieb der
+  Echtzeit-Task der Clients (`player_task`) alle 5 s vier Log-Zeilen samt
+  Heap-, Stationslisten- und CPU-Abfrage. Das blockierte ihn länger als die
+  40 ms I2S-Empfangspuffer, Samples gingen verloren, die Ausgabe lief kurz
+  leer, und der Plan fiel ~1,5 ms/s zurück (gemessen „I2S clock“ −1500 ppm auf
+  B6:88 und BD:FC, harter Resync etwa jede Minute). Das Protokollieren läuft
+  jetzt in `sink_stats_task` (Kern 0, Priorität 2); danach auf BD:FC über
+  3 min `err` −2…−9 ms, `ppm` 13–28, kein Resync.
+
+- Stufe 7 (Stufe 2 des Server/Client-Plans: Zeit-Sync und Drift, 2026-09-17):
+  der Client richtet seine Wiedergabe jetzt auf die Serveruhr aus statt nur
+  dem Ringpuffer zu folgen. `snapclient.c` macht den vollständigen
+  Vierzeiten-Austausch über `SNAP_MSG_TIME` (t1 lokal gesendet, t2/t3 aus
+  `received_*`/`sent_*` der Antwort, t4 lokal empfangen) und veröffentlicht
+  aus einem gleitenden Fenster von 12 Messungen die **mit der kleinsten
+  RTT** — im Multi-Hop-Mesh hat die RTT-Verteilung einen langen Schwanz, und
+  ein verzögertes Paket verfälscht seine eigene Offset-Schätzung um etwa die
+  halbe Zusatzverzögerung; Mitteln würde das hineinrechnen statt es zu
+  verwerfen. Die Anfragen ersetzen zugleich den in Stufe 6 eingebauten
+  reinen Herzschlag. `handle_server_settings()` wertet jetzt `bufferMs` und
+  `latency` aus, `handle_wire_chunk()` reicht den Chunk-Zeitstempel weiter.
+  `audio_sink.c` führt daraus eine Wiedergabe-Zeitachse: Soll-Zeitpunkt =
+  `chunk_ts - offset + bufferMs - latency + delay_trim_ms`, verglichen mit
+  `esp_timer` plus `AUDIO_I2S_TX_LATENCY_US` (die DMA-Kette hängt der
+  Schreibfunktion um 40 ms hinterher, dafür sind die DMA-Konstanten jetzt in
+  `audio_i2s.h` öffentlich). Fehler über 100 ms werden hart korrigiert
+  (Überspringen wenn zu spät, Stille halten wenn zu früh), darunter
+  kontinuierlich über das Resampling-Verhältnis: PI-Regler, auf +-200 ppm
+  begrenzt, mit Slew-Limit von 5 ppm je 20-ms-Frame. Neu dafür
+  `audio_resample.c` mit 32.32-Phasenakkumulator (die 16.16-Variante der
+  Referenz quantisiert auf ~15 ppm und ist damit gröber als die zu
+  korrigierende Drift).
+
+  Zwei Dimensionierungsfehler fielen beim Durchrechnen auf und sind
+  mitgefixt: (1) Der Ring war auf exakt `buffer_ms` dimensioniert, obwohl
+  das die *Dauerfüllung* ist und nicht die Obergrenze — der Server stempelt
+  einen Chunk beim Aufnehmen, der Client spielt ihn `buffer_ms` später, also
+  sind permanent `buffer_ms` unterwegs. Er lief damit dauerhaft am Anschlag
+  und hätte ankommendes Audio verworfen; Kapazität jetzt doppelt so groß
+  wie die Soll-Füllung, die Prebuffer-Schwelle bezieht sich auf letztere.
+  (2) Solange kein Zeit-Sync steht, wurde der Regler je Frame komplett
+  zurückgesetzt — das verwirft auch den Staging-Rest des Resamplers und
+  hätte 50-mal pro Sekunde ein Sample verschluckt; getrennt in vollen Reset
+  (nur bei echten Brüchen) und reine Reglerneutralisierung.
+
+  Ebenfalls umgesetzt (Plan-Punkt 13): der Server verzögert seine **eigene**
+  lokale Ausgabe um `buffer_ms + delay_trim_ms`. Ohne das spielt sein
+  Lautsprecher systematisch `bufferMs` — also per Default drei Sekunden — vor
+  jedem Client, weil er einen Frame direkt nach der Aufnahme ausgibt, während
+  die Clients denselben Chunk laut Zeitplan erst `bufferMs` später spielen.
+  Die Verzögerungsleitung sitzt in `audio_i2s_read_frame()` und damit
+  ausschließlich im Server-Pfad; der Client darf nicht ein zweites Mal
+  verzögert werden, sein Scheduler platziert die Ausgabe ja bereits. Wichtig
+  dabei: verzögert wird nur die Kopie für den Lautsprecher, **nicht** der
+  Puffer, den der Opus-Encoder bekommt — sonst ginge der Netzwerk-Stream
+  ebenfalls verzögert raus und der Effekt verdoppelte sich beim Client. Der
+  Ring ist für den vollen `delay_trim_ms`-Bereich dimensioniert, damit der
+  Trim im Betrieb verstellbar bleibt (wirkt über `apply_live_params()`, nur
+  in der Server-Rolle). `buffer_ms` löst dafür jetzt einen Reboot aus, weil
+  es auf beiden Rollen mehrsekündige Puffer beim Start dimensioniert.
+  Konfigurierbarkeit der Server-Verzögerung wurde bewusst weggelassen: ohne
+  sie ist das System schlicht unsynchron, ein Schalter dafür hätte keinen
+  sinnvollen zweiten Zustand.
+
+  Verifiziert: Build sauber, sowohl mit `CONFIG_SNAPSERVER_ENABLE_MESH_LITE=y`
+  als auch `=n`.
+
+- Stufe 8 (zwei Befunde aus dem ersten Zwei-Geräte-Lauf mit Zeit-Sync,
+  2026-09-17): (1) Der Regelfehler blieb dauerhaft bei +72…+100 ms stehen,
+  während `ppm` an seiner Begrenzung von −200 klebte. Ursache war meine
+  eigene Hysterese: Der „zu früh"-Zweig des harten Resyncs hielt Stille nur,
+  *bis der Fehler unter die Schwelle fiel*, übergab also systematisch einen
+  Restfehler von einer vollen Schwellenbreite (100 ms) an den Feinregler —
+  und der braucht bei 200 ppm rund 400 Sekunden für 80 ms. Die
+  Einstiegsbedingung war richtig, die Ausstiegsbedingung falsch; gehalten
+  wird jetzt, bis der Fehler tatsächlich null ist. Danach gemessen: `err`
+  zwischen −3 und −6 ms, `ppm` zwischen 4 und 11, also im Bereich der
+  reinen Quarzdrift. (2) Der Client fiel für ~25 s komplett aus dem Netz:
+  der Sendepuffer des Servers lief voll (`chunks/s=0`, `skipped` +51/s),
+  die Gegenrichtung stand still (`time_msgs` eingefroren), und am Ende warf
+  der AP die Station nach sechs unbeantworteten SA-Query-Versuchen raus.
+  Verdächtig war ESP-IDFs Default-Powersave für verbundene Stationen
+  (`WIFI_PS_MIN_MODEM`, Listen-Interval 3 ⇒ bis zu ~307 ms Funkstille) —
+  das passt sowohl zu den vollgelaufenen TCP-Puffern als auch zu den
+  verpassten Managementframes und bringt bei netzbetriebenen Lautsprechern
+  ohnehin nichts. `esp_wifi_set_ps(WIFI_PS_NONE)` in beiden Rollen; bei mir
+  läuft es damit spürbar besser.
+
+  Offen und noch nicht gemessen: Synchronität zweier Clients über längere
+  Zeit, Verhalten bei Parent-Wechsel, Wirkung von `delay_trim_ms`, und ob
+  Server- und Client-Lautsprecher nach der Delay-Line hörbar zusammenpassen.
+  Die PI-Parameter (Kp/Ki, ±200 ppm, 5 ppm Slew je Frame) sind ohne Messung
+  konservativ gesetzt; die `err=`/`ppm=`-Werte der `AUDIO_SINK`-Statuszeile
+  sind zum Nachjustieren gedacht. Falls die Funkverbindung weiterhin
+  aussetzt, ist der nächste Kandidat `esp_mesh_lite_set_wifi_reconnect_interval(2, 3, 5)`
+  in `mesh_client.c`: alle 5 s ein voller Scan zwingt das Funkmodul vom
+  Kanal und ist eine bekannte Ursache für TCP-Hänger. Der Wert stammt aus
+  Stufe 6 und war bewusst aggressiv gewählt, weil das Zielumfeld
+  „hochdynamisch" sein soll — schnelles Wiederfinden gegen stabilen Stream
+  ist gegeneinander abzuwägen.
+
+- Stufe 9 (Mehr-Client-Betrieb, 2026-09-18). Fünf Clients gleichzeitig
+  laufen jetzt mit `skipped=0`; die Ursachenkette dahin steht in den Commits
+  `9c00054`…`49bb6c0`. Was daraus offen bleibt:
+
+  **Fusion-Intervall auf 20 s — beobachten.** `esp_mesh_lite_set_fusion_config()`
+  in `mesh_client.c` steht auf `fusion_frequency_sec = 20` statt der
+  voreingestellten 600. Der Grund war eine Mesh-Insel: fällt der Root weg,
+  sehen die übrigen Knoten weiterhin gegenseitig ihre Beacons und melden sich
+  aneinander an. Das Ergebnis ist assoziiert, hat eine DHCP-Lease und sieht
+  von innen gesund aus, hat aber keinen Weg zum Server — und scannt deshalb
+  nie neu. Fusion ist der Mechanismus, der getrennte Meshes wieder
+  zusammenführt, und zehn Minuten Wartezeit darauf sind zu lang.
+  Der Haken: die Doku sagt „during fusion, the device to be fused will scan
+  the primary fusion device". Ob dieser Scan auch dann läuft, wenn gar keine
+  Insel existiert, ist nicht nachlesbar — die Bibliothek liegt nur
+  vorkompiliert vor. Falls ja, wäre das alle 20 s ein kurzer Ausflug vom
+  Kanal, also genau die Störungsart, die uns die Aussetzer beschert hat.
+  Im Lauf vom 2026-09-18 war davon nichts zu sehen (65 s durchgehend
+  `err=-7…-11 ms`, `ppm 12–25`, serverseitig `skipped=0`). **Wenn wieder
+  regelmäßige kleine Einbrüche auftauchen, ist das der erste Verdächtige**;
+  Gegenmaßnahme wäre 60 s statt 20 s — immer noch zehnmal schneller als der
+  Standard. Dasselbe gilt für das schon weiter oben vermerkte
+  `esp_mesh_lite_set_wifi_reconnect_interval(2, 3, 5)`.
+
+  **Doppelte IP nach Server-Neustart — erledigt 2026-09-23.** Der Server
+  vergibt bei jedem Start aus der jeweils anderen Hälfte des Netzes
+  (`.2–.101` / `.102–.201`, gemerkt im NVS unter `dhcps/half`, siehe
+  `provisioning_pin_ap_ip()`). Eine Adresse aus dem vorigen Lauf wird so nie
+  neu vergeben; ein Gerät, das sie weiterbenutzt, bekommt bei der nächsten
+  Verlängerung ein NAK. Nur wer zwei Neustarts ohne DHCP übersteht, könnte
+  noch kollidieren. Achtung beim Lesen der Client-Liste: dieselbe IP bei zwei
+  Clients ist meist keine Doppelvergabe, sondern ein Gerät (z. B. ein Handy)
+  am AP eines ESP-Clients, das per NAPT mit dessen Adresse ankommt.
+  Ursprüngliche Beschreibung: Die
+  DHCP-Lease-Tabelle des Servers liegt im RAM und ist nach einem Neustart
+  leer. Clients, die durchgelaufen sind, behalten ihre Adresse, während der
+  frische DHCP-Server dieselbe an den nächsten Anfragenden vergibt. Zwei
+  Stationen, eine Adresse, ein ARP-Eintrag am Root — die SYNs des einen
+  laufen ins Leere (auf Gerät gesehen: 48 s Timeouts bei −36 dBm direkt am
+  Root, behoben erst durch einen Rejoin mit neuer Adresse). Der
+  Unreachable-Watchdog in `snapclient.c` räumt das nach ~20 s auf, die
+  Ursache bleibt. Denkbare echte Fixes: feste Adressen je Client statt DHCP,
+  oder die Lease beim Verbindungsverlust freigeben. Erst messen, ob es nach
+  dem Watchdog überhaupt noch stört.
+
+  **`SNAPSERVER_MAX_CLIENTS = 10` ist gerechnet, nicht getestet.** Nachdem
+  die Task-Stacks im PSRAM liegen, kostet ein Client intern nur noch seinen
+  lwIP-Socket, rund 6 kB. Bei ~121 kB freiem internem Heap nach dem Start
+  sollten zehn Clients rund 60 kB übrig lassen. Gemessen wurde bisher bis
+  fünf (`min_ever` ≈ 43–105 kB). Ob der WLAN-Treiber bei zehn
+  Unicast-Streams noch etwas anderes reißt, ist offen — die `heap:`-Zeile
+  beantwortet es.
+
+  **`frame delta`-Spitzen wachsen mit der Client-Zahl.** Der Mittelwert
+  bleibt bei 20000 µs, aber `max` ist von ~22 ms auf 30–38 ms gestiegen. Bei
+  40 ms DMA-Reserve ist das noch tragbar, der Abstand ist aber kleiner als
+  vorher. Frühwarnzeichen wäre die Rückkehr von
+  `AUDIO_I2S: Capture timeline drifted`.
+
+- **Task-Prioritäten für `client_task`/`server_task`/Control-Tasks gesenkt
+  und wieder verworfen (2026-09-19).** Ansatz: die kurzen Verschlucker beim
+  Client-Beitritt/-Abgang kamen davon, dass `client_task` (Handshake,
+  Hello-Parsing per cJSON, Time-Antworten), `server_task` (accept) und die
+  Control-Tasks alle auf derselben Priorität wie die Sender-Tasks liefen —
+  FreeRTOS teilt bei Gleichstand reihum zu, ein beitretender Client nahm den
+  Sendern der laufenden Clients also Slots weg. Umgesetzt:
+  `SENDER_TASK_PRIORITY` unverändert bei 5, `CLIENT_TASK_PRIORITY`/
+  `SERVER_TASK_PRIORITY` auf 4, `CTRL_SERVER_PRIORITY`/`CTRL_CONN_PRIORITY`
+  auf 3.
+
+  **Ergebnis bei mir: deutlich schlechter, nicht besser.** Nicht weiter
+  diagnostiziert, Änderung direkt verworfen (nie committet, `git checkout`
+  auf `snapserver.c`/`snapcontrol.c`). Vermutung, nicht verifiziert: die
+  Time-Antworten laufen über `client_task`, das jetzt gegen Sender *und*
+  `server_task` konkurriert statt mit ihnen gleichauf zu liegen — das könnte
+  Time-Sync/Handshakes ausgehungert statt nur verzögert haben, was eher zu
+  „drastisch schlechter" passt als zu leicht spürbarem Ruckeln.
+
+  Falls das Verschlucker-Problem beim Client-Beitritt nochmal angegangen
+  wird: nicht pauschal alles unter die Sender schieben. Eher gezielt nur
+  `server_task` (accept) absenken und `client_task` auf Priorität mit den
+  Sendern lassen, oder das Hello-Parsing/JSON-Bauen aus `client_task` in
+  einen eigenen, niedrig priorisierten Schritt auslagern.
+
+- **Aussetzer beim Client-Abgang: Server-Rückstand statt Verwerfen
+  (2026-09-19).** Gemessen statt geraten: Ein Client wird abgeschaltet, und
+  für ~3 s bricht der Durchsatz *aller* übrigen Clients gleichzeitig auf
+  rund ein Drittel ein (vermutlich hält der AP Sendezeit und die gemeinsamen
+  WLAN-Sendepuffer mit Wiederholungen an die verschwundene Station fest —
+  nicht belegt). Der Server konnte pro Client aber nur ~0,4 s vorhalten
+  (8 Chunks Queue + TCP-Sendepuffer) und warf den Rest weg: 54–113
+  `skipped` pro Client, im Client-Log `shift`/`resync` — hörbare Löcher,
+  obwohl der Client-Puffer (3 s) den Einbruch hätte überbrücken können.
+
+  Umgesetzt in `snapserver.c`: Queue 120, Chunk-Pool 128 (Speicher im
+  PSRAM), der Sender wiederholt einen abgelehnten Chunk statt ihn zu
+  verwerfen, und verworfen wird nach Alter (`bufferMs − 600 ms`, max.
+  2,4 s). **Ergebnis auf Gerät:** Abgang eines Clients bei vier laufenden —
+  `skipped=0` bei allen übrigen, im Client-Log sichtbares Aufholen
+  (`fed` erst unter, dann über 480000 B pro 5 s), `shift`/`resync`/
+  `underrun` unverändert, `min_ever` 68 KB statt 30 KB.
+
+  Offen: Der Einbruch selbst bleibt (er wird nur überbrückt); ein Stau
+  länger als ~2,4 s verliert weiterhin Audio. Einmal gesehen, nicht
+  reproduziert: ein Level-2-Client, dessen Verbindung beim Abgang eines
+  *anderen* Clients per RST (`Connection reset by peer`, vermutlich aus der
+  NAPT seines Parents) abriss — der Client selbst merkte es erst nach 6 s
+  am Stall-Watchdog. Bei Wiederauftreten das Log des Parents mitschneiden.
+
+- **Sprachdurchsagen (`test/voice`): Stand und Offenes (2026-09-19).**
+  Seit 2026-09-19 committet (773851a ff.) und in `main`. Stand damals auf
+  Gerät: Server geflasht mit getrenntem Relay-/Speaker-Task, Clients auf
+  dem Stand davor (Heap- und CPU-Zeile schon drin), App mit 16 kHz
+  installiert. Hört sich viel besser an.
+
+  Gemessen bei der letzten Durchsage:
+  - Clients: `voice_underrun` 0–2,4 % statt 15 %, Kern 1 zu 65 % frei.
+  - Server: Kern 1 fast voll. `opus_audio` 76–78 % (ohne Durchsage 55 %),
+    `voice_speaker` 16–18 %, `IDLE1` 5 %. `Server decode: avg=13 ms
+    max=101 ms` (Uhrzeit, nicht CPU), 8 von 900 Paketen nicht gespielt.
+  - App: Verstärkung dauerhaft am Anschlag (24 dB), Mikrofon −33…−46 dBFS,
+    Ausgang −26…−39 dBFS RMS, also eher leise.
+
+  **Tests (für den nächsten Termin geplant):**
+  1. Lautstärke und Hall der Durchsage beurteilen.
+  2. Mikrofonquellen „Standard-Mikrofon“ und „Spracherkennung“ gegen
+     „Telefonat“ vergleichen. Eine lautere Quelle braucht weniger
+     Verstärkung und bringt weniger Hall. Danach den Regler
+     „Max. Verstärkung“ nach Gehör einstellen und den Default in
+     `SettingsStore.kt` anpassen.
+  3. Klingt der Server-Lautsprecher schlechter als die Clients? Wenn ja,
+     siehe unten „Server-Kern 1“.
+  4. Clients mit dem aktuellen Stand flashen (Code dort unverändert, nur
+     damit alle gleich sind) und eine Kette erzwingen (mehrere Knoten hinter
+     einem Relay). Dabei `heap … children=` und `cpu` des Relays
+     mitschneiden. Das beantwortet, ob die Relay-Hänger von heute am
+     internen RAM liegen.
+  5. Zwei Durchsagen direkt nacheinander, App-Kill mitten in der Durchsage,
+     WLAN-Verlust am Handy: Wächter und Unmute prüfen. Das ging schon
+     einmal, aber vor dem Umbau auf zwei Tasks.
+
+  **Offen, Durchsage:**
+  - **Server-Kern 1:** Während einer Durchsage die Komplexität des
+    Musik-Encoders senken (erledigt: `VOICE_MUSIC_COMPLEXITY` 0 in
+    `voice_announce.c`). Ungeklärt bleibt: Warum steigt
+    der Encoder während der Durchsage von 55 % auf 78 %? Vermutung:
+    Encoder und Decoder stören sich im gemeinsamen PSRAM-Cache. Nicht
+    gemessen.
+  - **Encoder allgemein:** 55 % eines Kerns für Mono mit 96 kbit/s bei
+    Komplexität 5 ist viel. Laut micro-opus-Benchmark wäre eher ~30 % zu
+    erwarten. Kandidaten: Floating-Point-Build
+    (`CONFIG_OPUS_FLOATING_POINT=y`, laut Doku beim Encodieren langsamer
+    als Fixed-Point), Pseudostack im PSRAM.
+  - **Last auf Kern 0 während der Durchsage:** `tiT` 29 % und `wifi` 25 %
+    statt 8 % und 6 %. Drei UDP-Ströme mit 25 kbit/s erklären das nicht.
+    Ursache unbekannt.
+  - **`voice_dropped` bei den Clients:** Pakete kommen in Schüben, der
+    60-ms-Puffer (`VOICE_MAILBOX_CAPACITY_SAMPLES`) läuft kurz über.
+    Größer machen kostet Latenz. Erst nach den Tests entscheiden.
+  - **Root-Bindung des Handys:** Serverseitige Erkennung, ob das Handy
+    direkt am Root hängt, plus gezieltes Verbinden per
+    `WifiNetworkSpecifier`. Siehe den Eintrag zur Standort-Berechtigung
+    unten, dort steht der Weg ohne Berechtigung.
+  - **`tools/voice_test.py`** sendete rohes PCM und passte nicht mehr zur
+    Opus-Firmware. Entfernt 2026-10-07.
+  - **`docs/code-review-voice.md`:** Stand von M3 und der Umbau auf zwei
+    Server-Tasks nachgetragen (2026-11-08).
+
+  **Offen, Robustheit (gehört eher auf `test/ServerClient`):**
+  - **Relay hängt sich auf**, wenn mehrere Kinder an ihm hängen (heute
+    zweimal, verschiedene Geräte: Reason-15-Abbrüche bei den Kindern bzw.
+    `STA not responded to 6 SA Query attempts`). Das schlauchförmige Netz
+    macht solche Ketten zum Normalfall, sie dürfen nicht zum Totalausfall
+    führen. Erst messen (Test 4), dann als Kandidat
+    `CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y` (WLAN- und lwIP-Puffer im
+    PSRAM) versuchen. Gesetzt seit 2026-09-23 (60a13e3); ob die Hänger
+    damit weg sind, ist nicht festgehalten.
+  - **Server erstickt an einem hängenden Zweig:** interner Heap bis auf
+    172 B bzw. 128 B (`min_ever`), `send stalled` bei allen. Er muss früher
+    erkennen, dass ein Client nichts abnimmt, und aufhören, dessen Pakete in
+    die WLAN-Puffer zu schieben, statt 20 s zu warten. Seit 2026-10-01
+    (44fc601) schließt der Server einen Client, wenn 3 s lang mehr
+    verworfen als zugestellt wird; ob das diesen Fall abdeckt, ist nicht
+    festgehalten.
+  - **Musik-Aussetzer bei 14E4 trotz −11 dBm** direkt am Server:
+    `chunks/s=0` für mehrere Sekunden, `skipped=315`, die anderen Clients
+    in derselben Zeit sauber. Einmal gesehen, Ursache unbekannt.
+
+  **Diagnose-Code (aufgeräumt 2026-11-08):**
+  - `main/cpu_stats.c` bleibt im Code, die FreeRTOS-Laufzeitstatistik ist
+    aber im normalen Build aus (`sdkconfig.defaults`), die CPU-Zeilen fehlen
+    damit im Log. Für eine Messung `CONFIG_FREERTOS_USE_TRACE_FACILITY=y`
+    und `CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y` setzen.
+  - `heap … children=` in der Client-Statuszeile und die Decodierzeit in
+    der Durchsage-Zeile bleiben: billig, und sie gehören zu offenen
+    Aufgaben (Relay mit mehreren Kindern, Rechenzeit bei Durchsagen).
+  - Die Puffer der CPU-Anzeige liegen statisch: Auf dem 3-KB-Stack von
+    `snapstats` hatten sie einen Stack-Overflow ausgelöst.
+
+  **Hinweise für die Tests:**
+  - `idf.py monitor` setzt den ESP beim Verbinden zurück. Zum
+    Mitschneiden ohne Neustart `--no-reset` verwenden. Unter Linux löst
+    schon das Öffnen des Ports über pyserial einen Reset aus, obwohl DTR/RTS
+    vorher abgeschaltet sind (beobachtet).
+  - Die iot_bridge-Komponente meldet bei jedem Neukonfigurieren
+    fehlgeschlagene lwIP-Patches. Die Meldung ist nicht neu. Der NAPT-Patch
+    ist eingespielt, die anderen drei greifen in ESP-IDF 5.4.3 nicht.
+    Vermutung: dort schon enthalten. Nicht geprüft.
+
+- **Wiedergabe-Synchronität Server gegen Clients (2026-09-20).** Der Server
+  lag hörbar hinter seinen Clients. Drei Ursachen, zwei davon hergeleitet,
+  eine nach Gehör:
+  1. **40 ms TX-Warteschlange.** Die Clients planen ihre Wiedergabe um
+     `AUDIO_I2S_TX_LATENCY_US` früher, die Verzögerungsleitung des Servers
+     tat das nicht. Behoben in `audio_i2s_set_output_delay()`.
+  2. **20 ms Framelänge.** Ein Chunk wird auf den *Anfang* seines Frames
+     gestempelt, erreicht die Verzögerungsleitung aber erst, wenn der Frame
+     vollständig aufgenommen ist. Ebenfalls dort abgezogen.
+  3. **Kein weiterer Zuschlag.** `SERVER_LEAD_MS` steht auf 20 ms, also
+     genau dem hergeleiteten Wert aus Punkt 2. Nach Gehör wurden 30, 40 und
+     50 ms probiert, alle klangen schlechter.
+
+     **Weiteres Einstellen nach Gehör ist sinnlos**, solange die Clients
+     ihre Wiedergabe selbst um mehr verschieben, als diese Schritte groß
+     sind: Der Regelfehler schwankt um zehn und mehr Millisekunden, und ein
+     harter Resync verschiebt ihn in einem Sprung. Für eine echte Aussage
+     bräuchte es eine Messung, wann ein bekanntes Signal tatsächlich jeden
+     Lautsprecher verlässt. Kandidaten für einen echten Restversatz sind
+     die Vorausschau des Opus-Encoders (~6,5 ms) und der Frameaufbau im
+     Client. **Das ist die erste Stelle, an der man drehen sollte**, falls
+     die Lautsprecher je neu auszurichten sind. `delay_trim_ms` steht dafür
+     nicht mehr zur Verfügung, es ist im Server ausgebaut.
+
+  **Stand 2026-10-02:** Zeitabgleich und Sprünge der Clients überarbeitet,
+  siehe `docs/releases/v0.5.1.md` bis `v0.5.3.md`. Laut v0.5.2 liegen die
+  Clients untereinander unter 2–3 ms (vorher 5–8 ms); seit v0.5.3 wirken
+  Latenz und Delay je Client sofort und auf das Sample genau. Die Messung
+  Server ↔ Clients am Lautsprecher fehlt weiterhin.
+
+  **Drift-Regelung:** `AUDIO_RESAMPLE_MAX_PPM` und
+  `CONTROL_INTEGRAL_CLAMP_PPM` standen auf 200 bzw. 100 ppm. Beobachtet
+  wurde, wie die Regelung am Anschlag klebte, während der Fehler auf über
+  70 ms wuchs und dann per hartem Resync zurücksprang. Beide stehen jetzt
+  auf 500 ppm. Im eingeschwungenen Zustand braucht die Regelung nur
+  einstellige bis niedrige zweistellige ppm, die Grenze ist also Reserve
+  zum Aufholen, keine Dauerkorrektur.
+
+- **`audio_i2s_clock_ppm()` ist unzuverlässig (2026-09-20).** Die Funktion
+  soll den I2S-Takt gegen `esp_timer` messen. Ihre Werte schwanken zwischen
+  Läufen desselben Geräts um mehrere hundert ppm (Server einmal −600, dann
+  −295), was ein Quarz nicht tut. Ursache vermutlich der Ankerzeitpunkt vor
+  dem eingeschwungenen Zustand. Auf einer früheren Fassung, die im
+  Aufnahmepfad statt im Ausgabepfad zählte, waren die Werte noch stärker
+  verfälscht, weil ein Client nicht in jedem Durchlauf liest.
+
+  **Konsequenz: Die daraus abgeleitete Behauptung, der Server laufe ~870 ppm
+  neben seinen Clients, ist nicht belegt.** Entfernt 2026-11-08, samt der
+  Angabe „I2S clock … ppm“ in den Statuszeilen. Die Drift zwischen Server
+  und Client zeigt die Regelung der Clients ohnehin (`ppm=` in der
+  `AUDIO_SINK`-Zeile).
+
+- **Akustische Artefakte im Eingangssignal (2026-09-20; behoben 2026-09-25,
+  siehe Fehler A: TinySine mit 1,8 V I2S-Pegel, TXB0104).** Traten
+  gleichzeitig auf Server und allen Clients auf, nur bei laufendem Stream,
+  und verschwanden nach einigen Minuten von selbst. Der Server-Lautsprecher
+  hängt nicht am Netzwerk, sein Signal kommt direkt vom I2S-Eingang: Mesh,
+  Snapcast, Ringpuffer, Drift-Regelung und Durchsage-Pfad scheiden damit
+  aus, die Störung steckt bereits im aufgenommenen Signal. Zähler zeigten
+  nichts (`underrun=0`, `skipped=0`, keine Clipping-Spitzen, Peaks bei
+  13000–18000 von 32767). Zum Eingrenzen fehlt eine feinere Messung des
+  Eingangspegels, etwa die Zahl der Frames je Sekunde unter einer Schwelle.
+  Nachtrag 2026-09-25: Das Bild -- nur der I2S-Eingang betroffen, nach
+  Minuten von selbst weg -- entspricht genau den wandernden Störphasen von
+  Fehler A. Mit Pegelwandler nicht mehr aufgetreten.
+
+- **Durchsage-App: Standort-Berechtigung (entfällt, geprüft 2026-10-01).**
+  Geplant war, die BSSID per `ACCESS_FINE_LOCATION` zu lesen, um zu
+  erkennen, ob das Handy direkt am Root hängt, und die Berechtigung danach
+  wieder zu entfernen. Eingebaut wurde sie nie: Das Manifest hat keine
+  Standort-Berechtigung, die App liest keine BSSID. Falls die Erkennung
+  doch kommt, dann ohne Berechtigung über den Server (Owner-IP aus
+  `voice_announce_rpc_start()` ist Level-1-Station und gehört keinem
+  ESP-Client; Ergebnis in der `Voice.Start`-Antwort).
