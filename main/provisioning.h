@@ -1,7 +1,8 @@
 /**
  * @file provisioning.h
- * @brief Decides mesh vs. provisioning-AP boot mode and owns the
- *        provisioning AP's timeout.
+ * @brief Decides mesh vs. provisioning-AP boot mode and owns the timers that
+ *        drive that decision (the client's post-boot join grace window,
+ *        AP timeout).
  *
  * The device always boots into exactly one of two AP modes: its configured
  * mesh SoftAP, or an open, unprotected "ESP32_provisioning_XXXXXX" fallback
@@ -15,11 +16,20 @@
 
 #include "device_config.h"
 #include "esp_err.h"
+#include "esp_event_base.h"
 #include "esp_netif.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* Consecutive client boots without joining the mesh before falling back.
+ * The server does not count (see provisioning_decide()). */
+#define PROVISIONING_BOOT_FAIL_THRESHOLD 7
+
+/* How long a normal mesh boot waits for a station join before it counts
+ * that boot as failed. */
+#define PROVISIONING_GRACE_WINDOW_US (60LL * 1000000LL)
 
 /* How long the open provisioning AP accepts connections before the radio
  * shuts off entirely, regardless of which reason brought it up. There is no
@@ -29,17 +39,10 @@ extern "C" {
 
 #define PROVISIONING_AP_IP_ADDR "192.168.5.1"
 
-/*
- * There used to be a third reason: seven boots in a row without a station
- * joining (a client that never found its parent, a server nobody joined).
- * It is gone since 2026-11-08; a server without clients ended up in the
- * provisioning AP on its eighth start. A device that cannot join now keeps
- * trying; the way back is the server's device list, or flashing with
- * "Erase device".
- */
 typedef enum {
     PROVISIONING_REASON_NONE = 0,       /* normal mesh boot */
     PROVISIONING_REASON_NO_CONFIG,      /* first boot or just factory-reset */
+    PROVISIONING_REASON_BOOT_FAIL_STREAK,
     PROVISIONING_REASON_MESH_DISABLED,
 } provisioning_reason_t;
 
@@ -119,6 +122,23 @@ esp_err_t provisioning_set_ap_idle_timeout(uint16_t seconds);
  * than PROVISIONING_REASON_NONE. */
 esp_err_t provisioning_start_fallback_ap(provisioning_reason_t reason);
 
+/* Arms the post-boot join grace window. Client only, for a PROVISIONING_
+ * REASON_NONE boot, once the Wi-Fi driver is up. On expiry, resets or
+ * increments the persisted boot-fail counter depending on whether the
+ * success event came in the meantime.
+ *
+ * success_event_base/success_event_id name the event that counts as "this
+ * boot joined the mesh": the client passes (IP_EVENT, IP_EVENT_STA_GOT_IP).
+ * The server does not arm it (since 2026-11-08). */
+esp_err_t provisioning_arm_grace_window(esp_event_base_t success_event_base,
+                                        int32_t success_event_id);
+
+/* True from arming the grace window until this boot's result is written.
+ * The client's root guard holds its restart until then: restarting first
+ * would never count the boot, and a client that cannot join would never
+ * reach the provisioning AP. */
+bool provisioning_grace_window_pending(void);
+
 /* Arms the provisioning AP's unconditional 3-minute timeout. Call once the
  * provisioning AP is up, for any reason. On expiry, stops the Wi-Fi radio
  * (esp_wifi_stop()) -- it does not reboot and does not fall back to any
@@ -132,6 +152,13 @@ esp_err_t provisioning_arm_ap_timeout(void);
  * the underlying task early -- it just skips its action when it wakes up,
  * which is fine since every caller reboots shortly after cancelling. */
 void provisioning_cancel_ap_timeout(void);
+
+/* Cancels a pending grace-window callback, e.g. right before a factory
+ * reset that must not have its NVS erase silently undone by the grace
+ * window writing device_config back a moment later. Safe to call even if
+ * no grace window is armed. Same "skips on wake, doesn't stop early"
+ * semantics as provisioning_cancel_ap_timeout(). */
+void provisioning_cancel_grace_window(void);
 
 #ifdef __cplusplus
 }

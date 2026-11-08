@@ -64,10 +64,8 @@ typedef struct {
     uint32_t opus_bitrate;
     uint8_t  opus_complexity;
 
-    /* Was the boot-fail counter, unused since 2026-11-08 (provisioning.h).
-     * Kept so the blob layout stays the same; older blobs may hold any
-     * value here. */
-    uint8_t  unused_boot_fail_count;
+    /* Provisioning bookkeeping, not user-editable via the config page. */
+    uint8_t  boot_fail_count;
 
     /* Server/client role. Applying a change requires a reboot. */
     uint8_t  role;
@@ -205,8 +203,19 @@ esp_err_t device_config_load(void);
 
 /*
  * Validates every field, writes it to NVS, and updates the in-RAM cache.
+ * Always resets boot_fail_count to 0: a deliberate save is a fresh
+ * reconfiguration attempt and should not be held back by a streak that led
+ * up to it. Use device_config_set_boot_fail_count() for the provisioning
+ * module's own bookkeeping instead, which does not have this side effect.
  */
 esp_err_t device_config_save(const device_config_t *cfg);
+
+/*
+ * Persists only the boot-fail counter, bypassing device_config_save()'s
+ * reset-to-0 side effect and full field validation. Used exclusively by
+ * provisioning.c to record consecutive mesh-join failures/successes.
+ */
+esp_err_t device_config_set_boot_fail_count(uint8_t count);
 
 /*
  * Erases the stored config so the next boot's device_config_load() takes the
@@ -218,8 +227,8 @@ esp_err_t device_config_factory_reset(void);
  * Copies the cached config into *out under a short critical section. Valid
  * only after device_config_load() has returned. Copy-out rather than a
  * pointer to the live struct: the cache can be written from a task other
- * than the caller's (another HTTP request, or a request the server relays
- * to a client), so a returned pointer could be read mid-write.
+ * than the caller's (the provisioning grace-window task, or another HTTP
+ * request), so a returned pointer could be read mid-write.
  */
 void device_config_get(device_config_t *out);
 

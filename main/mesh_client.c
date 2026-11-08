@@ -199,6 +199,11 @@ static void root_guard_cb(void *arg)
     if (s_root_checks < ROOT_GUARD_CONFIRM_CHECKS || now_us < ROOT_GUARD_MIN_UPTIME_US) {
         return;
     }
+    /* Not before this boot is counted (60 s from the mesh start, a little
+     * after ROOT_GUARD_MIN_UPTIME_US): see provisioning.h. */
+    if (provisioning_grace_window_pending()) {
+        return;
+    }
     if (local_playing) {
         if (!s_root_logged_local) {
             ESP_LOGW(TAG, "Mesh root, but playing the local input: restart %u s after it stops",
@@ -347,7 +352,7 @@ static esp_err_t start_client_mesh(const device_config_t *cfg)
 
     ESP_LOGI(TAG, "Mesh client started: relay SSID=%s (shared with root)", cfg->mesh_ssid);
 
-    return ESP_OK;
+    return provisioning_arm_grace_window(IP_EVENT, IP_EVENT_STA_GOT_IP);
 }
 #endif
 

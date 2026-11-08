@@ -84,6 +84,8 @@ static esp_err_t start_mesh(const device_config_t *cfg)
              cfg->mesh_ssid, cfg->mesh_channel, cfg->mesh_max_level);
     ESP_LOGI(TAG, "Autonomous root started: SoftAP + DHCP + Mesh-Lite level 1");
 
+    /* No boot-fail grace window: a server without clients is not a failed
+     * boot. Only clients count (provisioning.h). */
     return ESP_OK;
 }
 #endif
