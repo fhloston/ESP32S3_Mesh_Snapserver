@@ -34,13 +34,11 @@ CONFIG_LWIP_MAX_SOCKETS=24
 # that showed up as "Capture timeline drifted" four times in nine seconds.
 # Core 0 already hosts the Wi-Fi driver it works with anyway.
 CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0=y
-# Per-task CPU load for the stats lines (main/cpu_stats.c). Diagnostic; the
-# run-time counter is esp_timer based, so it costs one timer read per
-# context switch.
-CONFIG_FREERTOS_USE_TRACE_FACILITY=y
-CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS=y
-CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID=y
-CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+# Per-task CPU load in the stats lines (main/cpu_stats.c) is a diagnostic
+# and off in the normal build. For a measurement, add
+#   CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+#   CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+# (costs one esp_timer read per context switch).
 # The default event loop runs Mesh-Lite's own IP_EVENT_STA_GOT_IP handlers
 # and then mesh_client.c's one (device_config_t on the stack, logging,
 # snapclient_start()). At the IDF default of 2304 B every client overflowed

@@ -1749,8 +1749,8 @@ static void stats_task(void *arg)
             int16_t peak_left = 0;
             int16_t peak_right = 0;
             audio_i2s_take_output_peak(&peak_left, &peak_right);
-            ESP_LOGI(TAG, "DSP output peak: left=%d right=%d (of 32767), I2S clock %+ld ppm",
-                     (int)peak_left, (int)peak_right, (long)audio_i2s_clock_ppm());
+            ESP_LOGI(TAG, "DSP output peak: left=%d right=%d (of 32767)",
+                     (int)peak_left, (int)peak_right);
             uint32_t tx_dry = 0;
             uint32_t rx_lost = 0;
             audio_i2s_take_dma_stats(&tx_dry, &rx_lost);

@@ -15,5 +15,8 @@
  * this can. Call from a low-priority stats task only, it walks every task.
  * Not reentrant: one caller per device (snapstats on the server, the
  * player's stats on a client).
+ *
+ * Does nothing unless the build has FreeRTOS run-time stats, which the
+ * normal one does not (see sdkconfig.defaults).
  */
 void cpu_stats_log(const char *tag, unsigned min_percent);

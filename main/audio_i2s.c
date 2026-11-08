@@ -223,10 +223,6 @@ static int64_t s_samples_captured;
 #define CAPTURE_LATE_US 35000LL /* 25-29 ms is normal jitter: TX paces the loop */
 static int64_t s_capture_left_us;
 
-/* Clock check, see apply_dsp_and_output() and audio_i2s_clock_ppm(). */
-static int64_t s_rate_anchor_us;
-static int64_t s_rate_samples;
-
 /*
  * Output delay line for the server's own speaker (see
  * audio_i2s_set_output_delay()). Samples are written at s_delay_write and
@@ -1175,27 +1171,6 @@ static esp_err_t apply_dsp_and_output(const int16_t *mono, size_t mono_samples)
     }
     portEXIT_CRITICAL(&s_dsp_lock);
 
-    /*
-     * Clock check, counted here rather than on the capture side: both roles
-     * write exactly one frame per audio tick, while a client only *reads*
-     * when its player loop gets that far. Counting reads made the clients
-     * look 1200-1500 ppm slow where the server showed -180, which was the
-     * measurement, not the clock (2026-09-20).
-     *
-     * What it measures: the I2S unit's own rate against esp_timer. Both
-     * derive from the same crystal, so a crystal error cancels out and what
-     * is left is the divider's error against 48 kHz. Comparing the number
-     * between server and clients says whether a standing playback offset is
-     * a clock difference -- the drift control can only correct +-200 ppm of
-     * one -- or something in the timeline.
-     */
-    if (s_rate_anchor_us == 0) {
-        s_rate_anchor_us = esp_timer_get_time();
-        s_rate_samples = 0;
-    } else {
-        s_rate_samples += (int64_t)mono_samples;
-    }
-
     const size_t stereo_bytes =
         mono_samples * OUTPUT_CHANNELS * sizeof(int16_t);
     size_t bytes_written = 0;
@@ -1223,28 +1198,6 @@ static esp_err_t apply_dsp_and_output(const int16_t *mono, size_t mono_samples)
     }
 
     return ESP_OK;
-}
-
-int32_t audio_i2s_clock_ppm(void)
-{
-    const int64_t anchor = s_rate_anchor_us;
-    const int64_t samples = s_rate_samples;
-    if (anchor == 0 || samples < AUDIO_I2S_SAMPLE_RATE) {
-        return 0; /* less than a second of audio, too short to mean much */
-    }
-
-    const int64_t elapsed_us = esp_timer_get_time() - anchor;
-    if (elapsed_us <= 0) {
-        return 0;
-    }
-
-    /* How many samples the timer says should have arrived, against how many
-     * did. Positive means the I2S clock runs fast. */
-    const int64_t expected = elapsed_us * AUDIO_I2S_SAMPLE_RATE / 1000000LL;
-    if (expected == 0) {
-        return 0;
-    }
-    return (int32_t)((samples - expected) * 1000000LL / expected);
 }
 
 float audio_i2s_take_led_rms(void)
