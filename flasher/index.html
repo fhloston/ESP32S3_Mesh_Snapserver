@@ -87,17 +87,17 @@
 
   <h2>Ohne Chrome oder Edge</h2>
   <p>Mit dem eigenständigen <a href="https://github.com/espressif/esptool/releases">esptool</a> und den
-    vier Dateien aus dem <a href="https://github.com/pillepalle127/ESP32S3_Mesh_Snapserver/releases">Release</a>:</p>
+    vier Dateien aus dem <a href="https://github.com/sr-energy/ESP32S3_Mesh_Snapserver/releases">Release</a>:</p>
   <p><code>esptool --chip esp32s3 --before usb_reset write_flash 0x0 bootloader.bin 0x8000 partition-table.bin 0x10000 snapmesh-app.bin 0x3d0000 ota_data_initial.bin</code></p>
   <p class="muted"><code>snapmesh-full.bin</code> ist ein Gesamt-Image ab <code>0x0</code> für eine Neuinstallation.
     Es überschreibt auch die gespeicherten Einstellungen, für Updates also nicht verwenden.</p>
 
   <h2>App</h2>
   <p>Die Android-App <em>SnapAnnounce</em> (Durchsagen, Geräteliste, Einstellungen) liegt als APK im
-    <a href="https://github.com/pillepalle127/ESP32S3_Mesh_Snapserver/releases">Release</a>.
+    <a href="https://github.com/sr-energy/ESP32S3_Mesh_Snapserver/releases">Release</a>.
     Zum Installieren muss auf dem Handy „Unbekannte Apps installieren“ für den Browser erlaubt sein.</p>
 
-  <p class="muted"><a href="https://github.com/pillepalle127/ESP32S3_Mesh_Snapserver">Quellcode und
+  <p class="muted"><a href="https://github.com/sr-energy/ESP32S3_Mesh_Snapserver">Quellcode und
     Dokumentation</a> &middot; MIT License</p>
 </main>
 </body>

@@ -29,13 +29,13 @@ Alle Geräte haben dieselbe Firmware. Eins ist der **Server**, alle anderen sind
 
 ## Installation
 
-Firmware und App liegen unter [Releases](https://github.com/pillepalle127/ESP32S3_Mesh_Snapserver/releases).
+Firmware und App liegen unter [Releases](https://github.com/sr-energy/ESP32S3_Mesh_Snapserver/releases).
 Geflasht wird aus dem Browser.
 
 **Benötigt:** je Standort ein ESP32-S3 mit mindestens 4 MB Flash und **Octal-PSRAM** (z. B. N16R8), ein Datenkabel,
 Chrome oder Edge. Für die App ein Android-Handy.
 
-1. **[Flash-Seite](https://pillepalle127.github.io/ESP32S3_Mesh_Snapserver/)** öffnen, Board an der Buchse „USB“
+1. **[Flash-Seite](https://sr-energy.github.io/ESP32S3_Mesh_Snapserver/)** öffnen, Board an der Buchse „USB“
    anschließen, **Installieren**, „USB JTAG/serial debug unit“ wählen.
    **Bei Updates „Erase device“ nicht anhaken**, sonst sind die Einstellungen weg.
 2. Mit dem WLAN **`ESP32_provisioning_…`** verbinden, **http://192.168.5.1/** öffnen, Rolle, Mesh-Name und Passwort

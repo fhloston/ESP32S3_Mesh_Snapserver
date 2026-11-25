@@ -157,7 +157,7 @@ jobs:
               printf '\n---\n\n'
             fi
             cat <<'EOF'
-          **Firmware im Browser installieren:** https://pillepalle127.github.io/ESP32S3_Mesh_Snapserver/ (Chrome oder Edge am PC; bei einem Update „Erase device“ nicht anhaken, dann bleiben die Einstellungen erhalten).
+          **Firmware im Browser installieren:** https://sr-energy.github.io/ESP32S3_Mesh_Snapserver/ (Chrome oder Edge am PC; bei einem Update „Erase device“ nicht anhaken, dann bleiben die Einstellungen erhalten).
 
           **Mit esptool:**
           ```

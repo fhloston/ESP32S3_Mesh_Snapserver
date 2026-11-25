@@ -29,13 +29,13 @@ All devices run the same firmware. One is the **server**, all others are **clien
 
 ## Installation
 
-Firmware and app are under [Releases](https://github.com/pillepalle127/ESP32S3_Mesh_Snapserver/releases). Flashing
+Firmware and app are under [Releases](https://github.com/sr-energy/ESP32S3_Mesh_Snapserver/releases). Flashing
 works from the browser.
 
 **Needed:** per location an ESP32-S3 with at least 4 MB flash and **octal PSRAM** (e.g. N16R8), a data cable, Chrome
 or Edge. For the app an Android phone.
 
-1. Open the **[flash page](https://pillepalle127.github.io/ESP32S3_Mesh_Snapserver/)**, connect the board at the
+1. Open the **[flash page](https://sr-energy.github.io/ESP32S3_Mesh_Snapserver/)**, connect the board at the
    socket labelled "USB", **Install**, pick "USB JTAG/serial debug unit".
    **For updates, leave "Erase device" unchecked**, or the settings are gone.
 2. Join the Wi-Fi **`ESP32_provisioning_…`**, open **http://192.168.5.1/**, enter role, mesh name and password,
